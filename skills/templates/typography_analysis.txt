@@ -1,0 +1,10 @@
+[SKILL 2 - TYPOGRAPHY_ANALYSIS]
+Apply the following checks to detect typographic forgeries:
+- Verify that a single consistent font family is used throughout the document.
+- Flag any mixing of serif and sans-serif fonts in unexpected places (e.g., item names in a different font than the header).
+- Detect irregular character spacing, letter-spacing anomalies, or inconsistent baseline alignment.
+- Flag characters or words that appear bolder, lighter, or at a slightly different size than surrounding text.
+- Detect text that appears pixelated, blurry, or at a different resolution than the rest of the document.
+- Flag text that appears to have been placed on top of the image (halo effect, mismatched background).
+- Check for inconsistent capitalization patterns or encoding artifacts (strange symbols, replacement characters).
+Record result as: pass, fail, or uncertain.

@@ -1,0 +1,10 @@
+[SKILL 4 - LAYOUT_STRUCTURE]
+Apply the following checks to detect structural forgeries:
+- Verify the receipt follows a standard structure: header (store name, address, date/time) → item list → subtotal/tax/total → payment method → footer.
+- Flag missing mandatory sections (e.g., no store name, no date, no total).
+- Detect layout that looks like a generic template from a receipt generator tool (overly perfect alignment, too clean).
+- Check that column alignment (item name | quantity | price) is consistent throughout the item list.
+- Flag sections that are misaligned, overlapping, or placed in unusual positions.
+- Check that the payment section (cash/card, change given, card last digits) is consistent with the total.
+- Verify footer content (thank-you message, return policy, barcode/QR) is appropriate and consistent.
+Record result as: pass, fail, or uncertain.

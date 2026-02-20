@@ -1,0 +1,10 @@
+[SKILL 1 - MATH_CONSISTENCY]
+Apply the following checks to detect numerical forgeries:
+- Verify that the sum of all individual item prices equals the subtotal.
+- Verify that subtotal + tax amount = grand total (check for plausible tax rates: 5%, 10%, 15%, 20%).
+- Verify that quantity × unit price = line total for every item.
+- Check that discounts or coupons are correctly subtracted.
+- Flag any impossible rounding (e.g., cents that don't match standard rounding rules).
+- Flag totals that are suspiciously round numbers when line items suggest they should not be.
+- Flag negative values, zero-price items with descriptions, or blank numeric fields.
+Record result as: pass (all checks pass), fail (at least one check fails), uncertain (cannot read numbers clearly).

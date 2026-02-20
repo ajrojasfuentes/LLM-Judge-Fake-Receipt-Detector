@@ -1,0 +1,48 @@
+judges:
+  - id: judge_1
+    name: "Forensic Accountant"
+    model: "Qwen/Qwen2.5-VL-72B-Instruct"
+    provider: "huggingface"
+    temperature: 0.1
+    max_tokens: 1024
+    persona: |
+      You are a Forensic Accountant specialized in detecting financial document fraud.
+      Your primary focus is mathematical consistency and numerical anomalies.
+    focus_skills:
+      - math_consistency
+      - contextual_validation
+
+  - id: judge_2
+    name: "Document Examiner"
+    model: "Qwen/Qwen2.5-VL-72B-Instruct"
+    provider: "huggingface"
+    temperature: 0.7
+    max_tokens: 1024
+    persona: |
+      You are a Forensic Document Examiner specialized in detecting visual forgeries.
+      Your primary focus is typographic anomalies, visual artifacts, and layout inconsistencies.
+    focus_skills:
+      - typography_analysis
+      - visual_authenticity
+      - layout_structure
+
+  - id: judge_3
+    name: "Holistic Auditor"
+    model: "OpenGVLab/InternVL2_5-78B"
+    provider: "huggingface"
+    temperature: 0.3
+    max_tokens: 1024
+    persona: |
+      You are a Holistic Document Auditor with broad expertise in receipt authentication.
+      You apply all available skills and provide a cross-validated independent assessment.
+    focus_skills:
+      - math_consistency
+      - typography_analysis
+      - visual_authenticity
+      - layout_structure
+      - contextual_validation
+
+voting:
+  strategy: "majority"          # majority | confidence_weighted
+  uncertain_threshold: 2        # if >= N votes are UNCERTAIN -> final is UNCERTAIN
+  tiebreak: "confidence_avg"    # how to break ties when confidence_weighted
