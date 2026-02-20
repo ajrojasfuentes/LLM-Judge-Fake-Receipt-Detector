@@ -1,10 +1,38 @@
 [SKILL 4 - LAYOUT_STRUCTURE]
-Apply the following checks to detect structural forgeries:
-- Verify the receipt follows a standard structure: header (store name, address, date/time) → item list → subtotal/tax/total → payment method → footer.
-- Flag missing mandatory sections (e.g., no store name, no date, no total).
-- Detect layout that looks like a generic template from a receipt generator tool (overly perfect alignment, too clean).
-- Check that column alignment (item name | quantity | price) is consistent throughout the item list.
-- Flag sections that are misaligned, overlapping, or placed in unusual positions.
-- Check that the payment section (cash/card, change given, card last digits) is consistent with the total.
-- Verify footer content (thank-you message, return policy, barcode/QR) is appropriate and consistent.
+Apply the following checks to detect structural and layout forgeries.
+
+CRITICAL CONTEXT — Know your target:
+CPI (Copy-Paste Inside) forgeries, which dominate this dataset (~78%), may disrupt layout
+by inserting a duplicated region that slightly misaligns with the surrounding grid.
+Also, Total/Payment fields (the most targeted entity) may show layout anomalies when
+a forger modifies the amount without adjusting the surrounding spacing.
+
+IMPORTANT — Distinguish forgeries from benign annotations:
+Handwritten notes, stamps, or circled areas may appear "off-grid" but are authentic.
+Focus on whether the PRINTED content itself follows a coherent spatial layout.
+
+Checks to perform:
+- STANDARD RECEIPT STRUCTURE: Verify the receipt follows a standard flow:
+    header (store name, address, phone, date/time) → item list (name | qty | price) →
+    subtotal / tax / grand total → payment method → footer.
+  Flag missing mandatory sections (no store name, no date, no total).
+- COLUMN ALIGNMENT CONSISTENCY: Check that the price/amount column is right-aligned
+  consistently throughout the item list. A forged price that was pasted may be slightly
+  shifted left or right relative to the column baseline.
+- TOTAL SECTION LAYOUT: The total section (subtotal, tax, total) must be spatially distinct
+  from item lines. Flag if total values appear to be misaligned with preceding items,
+  or if the grand total is not clearly visually separated.
+- VERTICAL SPACING IRREGULARITIES: Check for unusual gaps or compressed spacing between
+  specific line items. A deleted line (CUT forgery) may leave irregular whitespace.
+  A copy-pasted line may create an unusually narrow or wide gap.
+- DUPLICATE LINE DETECTION: Check whether any line item appears twice with identical or
+  very similar content. CPI forgeries copy content within the document.
+- TEMPLATE DETECTION: Flag layouts that look like generic receipt generator output:
+  perfectly uniform spacing everywhere, placeholder-style content, too clean for a real
+  scanned document.
+- PAYMENT SECTION COHERENCE: The payment section must be internally consistent with
+  the grand total and physically positioned after the total section.
+- FOOTER APPROPRIATENESS: Footer content (thank-you messages, return policies, barcodes,
+  QR codes) should be appropriate for the apparent store type and locale.
+  A forger who modifies a receipt may not adjust the footer to match.
 Record result as: pass, fail, or uncertain.

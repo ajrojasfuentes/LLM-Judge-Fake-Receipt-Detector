@@ -10,6 +10,10 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from pipeline.forensic_pipeline import ForensicContext
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +122,22 @@ class BaseJudge(ABC):
     # Public interface
     # ------------------------------------------------------------------
 
-    def judge(self, receipt_id: str, image_path: Path) -> JudgeResult:
+    def judge(
+        self,
+        receipt_id: str,
+        image_path: Path,
+        forensic_context: Optional["ForensicContext"] = None,
+    ) -> JudgeResult:
         """
         Main entry point. Builds the prompt, calls the API, parses the response.
         Retries up to MAX_RETRIES times on invalid JSON.
+
+        Args:
+            receipt_id: Unique identifier for the receipt (used in the prompt).
+            image_path: Path to the receipt PNG image.
+            forensic_context: Optional ForensicContext from ForensicPipeline.
+                              When provided, pre-computed forensic signals are
+                              prepended to the prompt to focus the VLM's attention.
         """
         prompt = self._rubric.build_prompt(
             receipt_id=receipt_id,
@@ -129,6 +145,11 @@ class BaseJudge(ABC):
             persona_description=self.persona_description,
             focus_skills=self.focus_skills,
         )
+
+        # Prepend forensic pre-analysis to the prompt when available
+        if forensic_context is not None:
+            forensic_section = forensic_context.to_prompt_section()
+            prompt = forensic_section + "\n\n" + prompt
 
         last_error = ""
         for attempt in range(1, self.MAX_RETRIES + 1):

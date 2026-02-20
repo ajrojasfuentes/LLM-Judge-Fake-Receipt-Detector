@@ -3,16 +3,63 @@ sampling:
   total_samples: 20
   real_count: 10
   fake_count: 10
+  # Which split to draw samples from. The train split has the most forged examples (94).
+  split: "train"
   output_file: "outputs/samples.json"
 
 dataset:
-  download_url: "https://l3i-share.univ-lr.fr/2023Finditagain/findit2.zip"
+  download_url: "http://l3i-share.univ-lr.fr/2023Finditagain/findit2.zip"
+  # Directory where the ZIP is downloaded and extracted
   raw_dir: "data/raw"
+  # Root of the extracted dataset (inside raw_dir after extraction)
+  findit2_dir: "data/raw/findit2"
+  # Pre-collected CSV metadata files (generated from Dataset_Find_it_again!.ipynb)
+  metadata_dir: "data/dataset/findit2"
   samples_dir: "data/samples"
   labels_file: "data/labels.csv"
+
+  # Dataset split statistics for reference (from the official publication)
+  # Source: L3i Lab, University of La Rochelle — Find it again! dataset
+  splits:
+    train:
+      txt: "train.txt"
+      metadata_csv: "train_data.csv"
+      images_subdir: "train"
+      total: 577
+      forged: 94
+      real: 483
+    val:
+      txt: "val.txt"
+      metadata_csv: "val_data.csv"
+      images_subdir: "val"
+      total: 193
+      forged: 34
+      real: 159
+    test:
+      txt: "test.txt"
+      metadata_csv: "test_data.csv"
+      images_subdir: "test"
+      total: 218
+      forged: 35
+      real: 183
+
+  # Dataset-level forgery statistics (from the official paper, for context)
+  # Total forged receipts: 163 / 988  (~16.5% — heavily imbalanced)
+  # Forgery types (over 455 modified areas):
+  #   CPI  (Copy-Paste Inside same document): 353  (~77.6%)
+  #   IMI  (Text Insertion imitating font):    36  (~7.9%)
+  #   CUT  (Delete characters):                36  (~7.9%)
+  #   PIX  (Pixel-level modification):         33  (~7.3%)
+  #   CPO  (Copy-Paste from Outside document): 10  (~2.2%)
+  # Entity types most targeted:
+  #   Total/Payment: 234  (~51.4%)
+  #   Product:        95  (~20.9%)
+  #   Metadata:       82  (~18.0%)
+  #   Company:        26  (~5.7%)
+
   image_extensions:
+    - ".png"
     - ".jpg"
     - ".jpeg"
-    - ".png"
     - ".tif"
     - ".tiff"

@@ -1,11 +1,43 @@
 [SKILL 5 - CONTEXTUAL_VALIDATION]
-Apply the following checks to detect contextual forgeries:
-- Verify the date is plausible (not in the future, not impossibly old, correct format for locale).
-- Verify the store name is coherent and specific (not generic like "Store Name" or "My Shop").
-- Check that the address (if present) looks like a real address format for its apparent region/country.
-- Verify the payment method is consistent: if card payment, check for last 4 digits or card type; if cash, check for change given.
-- Flag contradictory information between fields (e.g., date says Monday but item says "Sunday Special").
-- Check that item names are plausible products for the apparent store type (e.g., a grocery store should not sell car parts).
-- Flag currency symbols inconsistent with the apparent locale.
-- Check that the time of purchase (if shown) is plausible for the store type.
+Apply the following checks to detect contextual and semantic forgeries.
+
+CRITICAL CONTEXT — Know your target:
+Metadata fields (date, time) represent ~18% of forged modifications. Company information
+~6%. Forgers often change a date or store name to make a receipt suitable for a
+fraudulent expense claim. These changes are semantically inconsistent even when visually subtle.
+
+IMPORTANT — Distinguish forgeries from benign annotations:
+Some AUTHENTIC receipts have handwritten notes (circled dates, added account numbers, written
+names) or typed annotations. These are NOT forgeries. Focus on whether the printed receipt
+content itself is internally consistent — not on external marks added by the recipient.
+
+Checks to perform:
+- DATE PLAUSIBILITY: Verify the purchase date is plausible.
+  • Not in the future (relative to today's date).
+  • Not impossibly old (receipts older than ~10 years are suspicious).
+  • Format is consistent with the receipt's apparent locale/country.
+  • Day-of-week (if shown) must match the calendar date.
+  • Time of purchase must be plausible for the store type (e.g., no grocery purchases at 3AM).
+- METADATA FIELD (DATE/TIME) FORGERY: A modified date is a common forgery type (IMI/PIX).
+  Check whether the date appears visually consistent with surrounding text (same font, same
+  ink rendering, same position alignment in the date field).
+- STORE NAME AND IDENTITY: Verify the store name is coherent and specific.
+  • Generic names like "Store Name", "My Shop", "Company", or placeholder text = FAKE.
+  • The store name should be consistent with the apparent business type and locale.
+  • Phone number format should match the apparent country.
+  • Address format (if present) should be realistic for the apparent region.
+- ITEM PLAUSIBILITY FOR STORE TYPE: Products should be consistent with the store type.
+  • A grocery store should not sell electronics.
+  • A pharmacy receipt with restaurant food items is suspicious.
+  • Brand names should be plausible for the market (no invented brands).
+- CURRENCY AND LOCALE CONSISTENCY: Currency symbols must match the apparent country.
+  Prices, tax rates, and payment methods must be regionally plausible.
+- PAYMENT METHOD CONSISTENCY: If card payment is shown, check for last-4 digits or card
+  type. If cash, verify change is shown. Card type (Visa/MC/Amex) should match card number
+  format hints if visible.
+- INTERNAL CONTRADICTIONS: Flag any field that contradicts another.
+  Examples: date says "Sunday" but store hours would be closed; receipt is labeled
+  "Tax Invoice" but shows no tax; subtotal and total are identical with a non-zero tax.
+- RECEIPT NUMBER / SEQUENCE: If a receipt or transaction number is shown, it should be
+  plausible (not zero, not obviously sequential like "0001" suggesting a template).
 Record result as: pass, fail, or uncertain.
