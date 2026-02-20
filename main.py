@@ -137,11 +137,20 @@ def cmd_run(args):
                 image_path,
                 ocr_txt_path=ocr_path,
             )
-            ela_info = (f"ELA={forensic_context.ela_suspicious_ratio:.0%}"
-                        if forensic_context.ela_suspicious_ratio is not None else "ELA=N/A")
+            mela_info = (f"MELA={forensic_context.multi_ela_suspicious_ratio:.0%}"
+                         if forensic_context.multi_ela_suspicious_ratio is not None
+                         else "MELA=N/A")
             cm_info = (f"CM={forensic_context.cm_confidence:.2f}"
                        if forensic_context.cm_confidence is not None else "CM=N/A")
-            print(f"{ela_info}  {cm_info}")
+            arith = forensic_context.ocr_arithmetic_report
+            arith_info = ""
+            if arith is not None:
+                consistent = arith.get("arithmetic_consistent")
+                if consistent is False:
+                    arith_info = "  ARITH=⚠"
+                elif consistent is True:
+                    arith_info = "  ARITH=✓"
+            print(f"{mela_info}  {cm_info}{arith_info}")
 
         # Run judges
         judge_results = []
@@ -165,7 +174,8 @@ def cmd_run(args):
             json.dump(output, f, indent=2)
 
         match = "CORRECT" if verdict.label == receipt["label"] else "WRONG"
-        print(f"  → VERDICT: {verdict.tally}  GT: {receipt['label']}  [{match}]")
+        u_str = f"  u={verdict.verdict_uncertainty:.2f}" if hasattr(verdict, "verdict_uncertainty") else ""
+        print(f"  → VERDICT: {verdict.tally}{u_str}  GT: {receipt['label']}  [{match}]")
 
     print("\n[run] All receipts processed.")
 
@@ -328,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p = sub.add_parser("run", help="Run 3 LLM judges on all sampled receipts")
     run_p.add_argument(
         "--forensic", action="store_true",
-        help="Pre-compute forensic signals (ELA, noise, copy-move, OCR) and include in prompts",
+        help="Pre-compute forensic signals (Multi-ELA, noise, copy-move, OCR + arithmetic) and include in prompts",
     )
 
     sub.add_parser("evaluate", help="Compute evaluation metrics (accuracy, F1, confusion matrix)")

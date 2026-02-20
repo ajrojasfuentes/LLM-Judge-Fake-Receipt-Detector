@@ -43,6 +43,6 @@ judges:
       - contextual_validation
 
 voting:
-  strategy: "majority"          # majority | confidence_weighted
-  uncertain_threshold: 2        # if >= N votes are UNCERTAIN -> final is UNCERTAIN
-  tiebreak: "confidence_avg"    # how to break ties when confidence_weighted
+  strategy: "dynamic_weighted"  # dynamic_weighted | majority | confidence_weighted
+  uncertain_threshold: 2        # if >= N raw UNCERTAIN votes -> force UNCERTAIN
+  tiebreak: "confidence_avg"    # used only for confidence_weighted strategy
