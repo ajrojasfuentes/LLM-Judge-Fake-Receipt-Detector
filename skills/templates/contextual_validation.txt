@@ -1,0 +1,11 @@
+[SKILL 5 - CONTEXTUAL_VALIDATION]
+Apply the following checks to detect contextual forgeries:
+- Verify the date is plausible (not in the future, not impossibly old, correct format for locale).
+- Verify the store name is coherent and specific (not generic like "Store Name" or "My Shop").
+- Check that the address (if present) looks like a real address format for its apparent region/country.
+- Verify the payment method is consistent: if card payment, check for last 4 digits or card type; if cash, check for change given.
+- Flag contradictory information between fields (e.g., date says Monday but item says "Sunday Special").
+- Check that item names are plausible products for the apparent store type (e.g., a grocery store should not sell car parts).
+- Flag currency symbols inconsistent with the apparent locale.
+- Check that the time of purchase (if shown) is plausible for the store type.
+Record result as: pass, fail, or uncertain.

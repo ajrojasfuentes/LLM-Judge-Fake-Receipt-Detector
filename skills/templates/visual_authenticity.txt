@@ -1,0 +1,10 @@
+[SKILL 3 - VISUAL_AUTHENTICITY]
+Apply the following checks to detect visual/image-level forgeries:
+- Examine JPEG compression artifacts: flag areas where compression blocks are inconsistent (some areas over-compressed, others not).
+- Detect copy-paste traces: look for hard edges, halos, or color fringing around text or numbers.
+- Check for uniform lighting and shadows across the entire image.
+- Detect signs of digital overlay: text or elements that cast no shadow and appear artificially placed.
+- Check that the paper texture (if visible) is consistent across the image.
+- Flag areas that appear artificially whitened or erased (white rectangles, smudging over original content).
+- Check if the image background is unnaturally clean/perfect compared to a real scanned receipt.
+Record result as: pass, fail, or uncertain.

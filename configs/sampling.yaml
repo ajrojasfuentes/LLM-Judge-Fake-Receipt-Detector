@@ -1,0 +1,18 @@
+sampling:
+  random_seed: 42
+  total_samples: 20
+  real_count: 10
+  fake_count: 10
+  output_file: "outputs/samples.json"
+
+dataset:
+  download_url: "https://l3i-share.univ-lr.fr/2023Finditagain/findit2.zip"
+  raw_dir: "data/raw"
+  samples_dir: "data/samples"
+  labels_file: "data/labels.csv"
+  image_extensions:
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+    - ".tif"
+    - ".tiff"

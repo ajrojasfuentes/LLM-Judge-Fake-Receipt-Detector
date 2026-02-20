@@ -1,0 +1,19 @@
+{
+  "label": "FAKE",
+  "confidence": 87.5,
+  "reasons": [
+    "Item subtotal does not match the sum of line items by $3.20",
+    "Font family changes between item names and prices",
+    "White rectangle visible over original total field",
+    "Tax rate of 23% is implausible for this region"
+  ],
+  "skill_results": {
+    "math_consistency": "fail",
+    "typography": "fail",
+    "visual_authenticity": "fail",
+    "layout_structure": "pass",
+    "contextual_validation": "uncertain"
+  },
+  "flags": ["TOTAL_MISMATCH", "FONT_INCONSISTENCY", "ERASED_CONTENT", "TAX_ERROR"],
+  "risk_level": "high"
+}
