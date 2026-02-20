@@ -1,10 +1,41 @@
 [SKILL 3 - VISUAL_AUTHENTICITY]
-Apply the following checks to detect visual/image-level forgeries:
-- Examine JPEG compression artifacts: flag areas where compression blocks are inconsistent (some areas over-compressed, others not).
-- Detect copy-paste traces: look for hard edges, halos, or color fringing around text or numbers.
-- Check for uniform lighting and shadows across the entire image.
-- Detect signs of digital overlay: text or elements that cast no shadow and appear artificially placed.
-- Check that the paper texture (if visible) is consistent across the image.
-- Flag areas that appear artificially whitened or erased (white rectangles, smudging over original content).
-- Check if the image background is unnaturally clean/perfect compared to a real scanned receipt.
+Apply the following checks to detect visual and image-level forgeries.
+
+CRITICAL CONTEXT — Know your target:
+This dataset's receipts were forged primarily using COPY-PASTE INSIDE (CPI) — a region from
+the same document is duplicated and placed elsewhere (~77% of all forgeries). Secondary methods
+include pixel editing (PIX), character deletion (CUT), and external paste (CPO). This means:
+  • Most forgeries are SUBTLE: a single number altered, not wholesale replacement.
+  • Look specifically at price fields and totals — they are the most common targets.
+  • Copy-paste artifacts appear as regions with unnaturally consistent pixel patterns.
+
+IMPORTANT — Distinguish forgeries from benign annotations:
+Some AUTHENTIC receipts contain handwritten notes (checkmarks, underlines, circled amounts,
+stamps) or digital marks (typed additions). These are NOT forgeries. Do NOT flag authentic
+annotation marks as evidence of tampering. Forgeries involve fraudulent modification of the
+receipt's financial or identifying information.
+
+Checks to perform:
+- COPY-PASTE TRACES: Look for hard edges, halos, subtle color fringing, or unnatural sharpness
+  boundaries around individual characters or numeric values. Pay special attention to price
+  columns and total fields. A copied character may have a slightly different background shade.
+- JPEG COMPRESSION INCONSISTENCY: Flag areas where JPEG block artifacts differ from surrounding
+  regions — edited areas (especially in PNG images saved as JPEG at some point) may show
+  different compression levels within the same image.
+- PIXEL-LEVEL MODIFICATIONS (PIX): Check for individual characters that appear drawn or
+  modified at pixel level — e.g., a "1" turned into a "7", or a "0" added. Look for jagged
+  edges, mismatched pixel density, or stroke width inconsistencies on specific digits.
+- ERASED / WHITENED AREAS: Flag rectangular white patches, smudging, or unnatural uniform-color
+  regions where content was removed. Check if surrounding pixels show compression artifacts
+  inconsistent with a clean white background.
+- TEXT OVERLAY (DIGITAL INSERTION): Flag text or numbers that appear artificially placed —
+  no paper texture visible underneath, different rendering subpixel hinting, or text that
+  casts no shadow on the document surface.
+- RESOLUTION MISMATCHES: Check if specific regions (especially altered price fields) appear
+  at different resolution or sharpness than the surrounding scan. Copy-pasted content from
+  another source may have different DPI or anti-aliasing.
+- PAPER TEXTURE CONSISTENCY: Verify that the paper texture (grain, fold lines, scanner noise)
+  is uniform across the document. Pasted regions may show unnaturally clean backgrounds.
+- LIGHTING & SHADOW UNIFORMITY: Ensure lighting gradients and scanner exposure are consistent.
+  Areas with edits often lack the natural brightness falloff of adjacent regions.
 Record result as: pass, fail, or uncertain.
