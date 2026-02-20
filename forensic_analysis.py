@@ -39,16 +39,25 @@ from PIL import Image
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
-class ELAResult:
-    """Result container for Error Level Analysis."""
-    ela_image: np.ndarray           # Grayscale ELA heatmap (0-255)
-    ela_color: np.ndarray           # Color-mapped ELA (BGR, for visualization)
-    mean_error: float               # Global mean error level
-    std_error: float                # Global std of error levels
-    max_error: float                # Maximum error level found
-    suspicious_ratio: float         # Fraction of pixels above threshold
-    quality_used: int               # JPEG quality used for recompression
-    threshold_used: float           # Threshold for "suspicious" pixels
+class MultiELAResult:
+    """
+    Result container for Multi-Quality ELA (replaces single-quality ELA).
+
+    Instead of compressing once and comparing, this compresses at several
+    JPEG quality levels and measures the *variance* of the error across
+    those levels, pixel by pixel.  A pristine PNG region compresses
+    smoothly across qualities; a region with prior JPEG history (e.g. pasted
+    from a differently-encoded source) shows higher cross-quality variance.
+    """
+    variance_map: np.ndarray        # Per-pixel cross-quality variance heatmap (uint8)
+    variance_color: np.ndarray      # Color-mapped variance heatmap (BGR)
+    mean_variance: float            # Global mean of cross-quality variance
+    max_variance: float             # Maximum per-pixel variance found
+    suspicious_ratio: float         # Fraction of pixels with variance > threshold
+    divergent_blocks: int           # Blocks with variance > 2σ from mean
+    total_blocks: int               # Total blocks analysed
+    qualities_used: Tuple[int, ...] # JPEG quality levels used, e.g. (70, 85, 95)
+    variance_threshold: float       # Threshold used for suspicious_ratio
 
 
 @dataclass
@@ -105,7 +114,7 @@ class OCRResult:
 class ForensicReport:
     """Complete forensic analysis report for a single image."""
     image_path: str
-    ela: Optional[ELAResult] = None
+    multi_ela: Optional[MultiELAResult] = None
     noise: Optional[NoiseMapResult] = None
     frequency: Optional[FrequencyResult] = None
     copy_move: Optional[CopyMoveResult] = None
@@ -129,12 +138,12 @@ class ForensicAnalyzer:
     ----------
     output_dir : str or Path
         Directory where generated images/reports will be saved.
-    ela_quality : int
-        JPEG recompression quality for ELA (default: 95).
-    ela_threshold : float
-        Pixel error threshold to flag as "suspicious" in ELA (default: 25.0).
-    ela_scale : float
-        Amplification factor for ELA visualization (default: 10.0).
+    mela_qualities : tuple of int
+        JPEG quality levels for Multi-ELA cross-quality variance (default: (70, 85, 95)).
+    mela_block_size : int
+        Block size in pixels for Multi-ELA block-level analysis (default: 16).
+    mela_variance_threshold : float
+        Per-pixel variance threshold to flag a pixel as suspicious (default: 5.0).
     noise_block_size : int
         Block size in pixels for noise analysis (default: 32).
     freq_block_size : int
@@ -142,42 +151,44 @@ class ForensicAnalyzer:
     orb_features : int
         Max features for ORB detector in copy-move (default: 3000).
     match_threshold : float
-        Distance ratio threshold for keypoint matching (default: 0.70).
+        Distance ratio threshold for Lowe's ratio test (default: 0.55, stricter
+        than the common 0.70 to reduce false positives from repetitive text).
     min_match_distance : float
-        Minimum pixel distance between matched keypoints to count as
-        copy-move (filters self-matches) (default: 50.0).
+        Minimum pixel distance between matched keypoints to count as copy-move.
+        Set to 150.0 to filter out character-level texture repetition (default: 150.0).
     cluster_eps : float
-        DBSCAN-like clustering epsilon for grouping matches (default: 40.0).
+        Epsilon for spatial clustering of matched keypoints (default: 30.0).
     min_cluster_size : int
-        Minimum points in a cluster to be considered valid (default: 3).
+        Minimum points in a cluster to be considered a valid copy-move region
+        (default: 8 — higher than common 3 to suppress text-pattern noise).
     """
 
     def __init__(
         self,
         output_dir: Union[str, Path] = "./forensic_output",
         *,
-        # ELA params
-        ela_quality: int = 95,
-        ela_threshold: float = 25.0,
-        ela_scale: float = 10.0,
+        # Multi-ELA params
+        mela_qualities: Tuple[int, ...] = (70, 85, 95),
+        mela_block_size: int = 16,
+        mela_variance_threshold: float = 5.0,
         # Noise params
         noise_block_size: int = 32,
         # Frequency params
         freq_block_size: int = 32,
-        # Copy-move params
+        # Copy-move params (calibrated for receipt text images)
         orb_features: int = 3000,
-        match_threshold: float = 0.70,
-        min_match_distance: float = 50.0,
-        cluster_eps: float = 40.0,
-        min_cluster_size: int = 3,
+        match_threshold: float = 0.55,
+        min_match_distance: float = 150.0,
+        cluster_eps: float = 30.0,
+        min_cluster_size: int = 8,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # ELA
-        self.ela_quality = ela_quality
-        self.ela_threshold = ela_threshold
-        self.ela_scale = ela_scale
+        # Multi-ELA
+        self.mela_qualities = mela_qualities
+        self.mela_block_size = mela_block_size
+        self.mela_variance_threshold = mela_variance_threshold
 
         # Noise
         self.noise_block_size = noise_block_size
@@ -250,82 +261,120 @@ class ForensicAnalyzer:
         cv2.imwrite(str(path), img)
         return path
 
-    # ── 1. ERROR LEVEL ANALYSIS (ELA) ────────────────────────────────────
+    # ── 1. MULTI-QUALITY ELA (Multi-ELA) ─────────────────────────────────
 
-    def error_level_analysis(
+    def multi_ela_analysis(
         self,
         image_path: Union[str, Path],
+        qualities: Tuple[int, ...] = (70, 85, 95),
+        block_size: int = 16,
+        variance_threshold: float = 5.0,
         save: bool = True,
         prefix: str = "",
-    ) -> ELAResult:
+    ) -> MultiELAResult:
         """
-        Perform Error Level Analysis on a PNG image.
+        Perform Multi-Quality Error Level Analysis on a receipt image.
+
+        Unlike single-quality ELA, this method compresses the image at
+        several JPEG quality levels and measures the cross-quality *variance*
+        of the recompression error, pixel by pixel.
 
         How it works:
-        1. Load the original PNG image.
-        2. Re-compress it as JPEG at a fixed quality level (in-memory).
-        3. Compute the absolute difference between original and recompressed.
-        4. Amplify and normalize the difference to create a heatmap.
+        1. Load the original image (PNG or JPEG — format-agnostic).
+        2. Re-compress in-memory at each quality level in `qualities`.
+        3. Compute the per-pixel max-channel absolute difference from the
+           original for each quality level → one error map per quality.
+        4. Stack all error maps and compute per-pixel variance across them.
+        5. High variance → region responds differently to different quality
+           levels → "compression memory" (prior JPEG encoding history).
+        6. Low variance → pristine region (consistent compression behaviour).
 
-        Regions that were edited (especially pasted from differently-compressed
-        sources) will show different error levels compared to the rest of the
-        image, appearing as bright spots in the ELA map.
+        Why this works on PNG files:
+        For an unedited scan (PNG, lossless), every region compresses
+        smoothly and consistently across quality levels — variance is
+        uniformly low.  A region pasted from a JPEG-derived source, or
+        manipulated in software that quantised pixel values, will exhibit
+        a *different* error-vs-quality curve, producing detectable
+        cross-quality variance.
 
         Parameters
         ----------
-        image_path : path to the PNG image.
+        image_path : path to the receipt image (PNG, JPEG, etc.).
+        qualities : JPEG quality levels to compare (default: (70, 85, 95)).
+        block_size : block size in pixels for block-level anomaly counting.
+        variance_threshold : per-pixel variance value above which a pixel
+                             is flagged as "suspicious".
         save : whether to save output images to disk.
         prefix : filename prefix for saved images.
 
         Returns
         -------
-        ELAResult with the ELA heatmap and statistics.
+        MultiELAResult with variance heatmap and statistics.
         """
         image_path = Path(image_path)
         if not prefix:
             prefix = image_path.stem
 
-        # Load as RGB
+        # ── Load image ──
         rgb = self._load_image_rgb(image_path)
-
-        # Re-compress via JPEG in memory
         pil_img = Image.fromarray(rgb)
-        buffer = io.BytesIO()
-        pil_img.save(buffer, format="JPEG", quality=self.ela_quality)
-        buffer.seek(0)
-        recompressed = np.array(Image.open(buffer))
+        h, w = rgb.shape[:2]
 
-        # Compute absolute difference per channel, then take max across channels
-        diff = np.abs(rgb.astype(np.float32) - recompressed.astype(np.float32))
-        # Max across channels gives the strongest signal per pixel
-        ela_gray = np.max(diff, axis=2)
+        # ── Compress at each quality; compute per-pixel max-channel error ──
+        ela_maps: List[np.ndarray] = []
+        for q in qualities:
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=q)
+            buf.seek(0)
+            recomp = np.array(Image.open(buf).convert("RGB"))
+            diff = np.abs(rgb.astype(np.float32) - recomp.astype(np.float32))
+            ela_maps.append(np.max(diff, axis=2))   # (H, W)
 
-        # Amplify for visibility
-        ela_amplified = np.clip(ela_gray * self.ela_scale, 0, 255).astype(np.uint8)
+        # ── Per-pixel variance across quality levels ──
+        ela_stack = np.stack(ela_maps, axis=2)              # (H, W, Q)
+        variance_map = np.var(ela_stack, axis=2).astype(np.float64)  # (H, W)
 
-        # Statistics
-        mean_err = float(ela_gray.mean())
-        std_err = float(ela_gray.std())
-        max_err = float(ela_gray.max())
-        suspicious = float((ela_gray > self.ela_threshold).mean())
+        # ── Global statistics ──
+        mean_var = float(variance_map.mean())
+        max_var = float(variance_map.max())
+        suspicious_ratio = float((variance_map > variance_threshold).mean())
 
-        # Color-mapped version
-        ela_color = self._apply_colormap(ela_amplified)
+        # ── Block-level anomaly analysis ──
+        rows = h // block_size
+        cols = w // block_size
+        block_means = np.zeros((rows, cols), dtype=np.float64)
+        for r in range(rows):
+            for c in range(cols):
+                blk = variance_map[
+                    r * block_size:(r + 1) * block_size,
+                    c * block_size:(c + 1) * block_size,
+                ]
+                block_means[r, c] = float(blk.mean())
 
-        result = ELAResult(
-            ela_image=ela_amplified,
-            ela_color=ela_color,
-            mean_error=mean_err,
-            std_error=std_err,
-            max_error=max_err,
-            suspicious_ratio=suspicious,
-            quality_used=self.ela_quality,
-            threshold_used=self.ela_threshold,
+        bv_mean = float(block_means.mean())
+        bv_std = float(block_means.std())
+        divergent = int((block_means > bv_mean + 2.0 * bv_std).sum())
+        total_blocks = rows * cols
+
+        # ── Visualisation ──
+        var_amplified = np.clip(variance_map * 8.0, 0, 255).astype(np.uint8)
+        var_color = self._apply_colormap(var_amplified)
+
+        result = MultiELAResult(
+            variance_map=var_amplified,
+            variance_color=var_color,
+            mean_variance=mean_var,
+            max_variance=max_var,
+            suspicious_ratio=suspicious_ratio,
+            divergent_blocks=divergent,
+            total_blocks=total_blocks,
+            qualities_used=tuple(qualities),
+            variance_threshold=variance_threshold,
         )
 
         if save:
-            self._save_image(ela_amplified, f"{prefix}_ela_gray.png", "ela")
-            self._save_image(ela_color, f"{prefix}_ela_color.png", "ela")
+            self._save_image(var_amplified, f"{prefix}_mela_variance.png", "multi_ela")
+            self._save_image(var_color, f"{prefix}_mela_color.png", "multi_ela")
 
         return result
 
@@ -674,9 +723,11 @@ class ForensicAnalyzer:
                     cv2.circle(vis, p1, 3, (255, 0, 0), -1)
                     cv2.circle(vis, p2, 3, (255, 0, 0), -1)
 
-                # Confidence heuristic
-                # Based on number of matches and clusters
-                confidence = min(1.0, num_matches / 30.0) * min(1.0, num_clusters / 2.0)
+                # Confidence heuristic — calibrated for text-heavy receipt images.
+                # Receipt text produces many incidental ORB matches (same characters,
+                # same font patterns).  Thresholds of 200 matches / 5 clusters ensure
+                # that only genuine large-scale copy-move regions score high.
+                confidence = min(1.0, num_matches / 200.0) * min(1.0, num_clusters / 5.0)
 
         # Generate heatmap from mask
         match_blurred = cv2.GaussianBlur(match_mask, (31, 31), 0)
@@ -1062,11 +1113,18 @@ class ForensicAnalyzer:
 
         report = ForensicReport(image_path=str(image_path))
 
-        # 1. ELA
+        # 1. Multi-ELA
         try:
-            report.ela = self.error_level_analysis(image_path, save=save, prefix=prefix)
+            report.multi_ela = self.multi_ela_analysis(
+                image_path,
+                qualities=self.mela_qualities,
+                block_size=self.mela_block_size,
+                variance_threshold=self.mela_variance_threshold,
+                save=save,
+                prefix=prefix,
+            )
         except Exception as e:
-            report.errors["ela"] = f"{type(e).__name__}: {e}"
+            report.errors["multi_ela"] = f"{type(e).__name__}: {e}"
 
         # 2. Noise Map
         try:
@@ -1165,17 +1223,19 @@ class ForensicAnalyzer:
         """
         d: Dict[str, Any] = {"image_path": report.image_path}
 
-        # ELA metrics
-        if report.ela:
-            d["ela_mean_error"] = report.ela.mean_error
-            d["ela_std_error"] = report.ela.std_error
-            d["ela_max_error"] = report.ela.max_error
-            d["ela_suspicious_ratio"] = report.ela.suspicious_ratio
+        # Multi-ELA metrics
+        if report.multi_ela:
+            d["mela_mean_variance"] = report.multi_ela.mean_variance
+            d["mela_max_variance"] = report.multi_ela.max_variance
+            d["mela_suspicious_ratio"] = report.multi_ela.suspicious_ratio
+            d["mela_divergent_blocks"] = report.multi_ela.divergent_blocks
+            d["mela_total_blocks"] = report.multi_ela.total_blocks
         else:
-            d["ela_mean_error"] = None
-            d["ela_std_error"] = None
-            d["ela_max_error"] = None
-            d["ela_suspicious_ratio"] = None
+            d["mela_mean_variance"] = None
+            d["mela_max_variance"] = None
+            d["mela_suspicious_ratio"] = None
+            d["mela_divergent_blocks"] = None
+            d["mela_total_blocks"] = None
 
         # Noise metrics
         if report.noise:
