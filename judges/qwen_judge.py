@@ -44,7 +44,6 @@ class QwenJudge(BaseJudge):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._client = InferenceClient(
-            provider="huggingface",
             api_key=os.environ["HF_TOKEN"],
         )
 
@@ -114,7 +113,7 @@ def make_forensic_accountant() -> QwenJudge:
             "Your primary focus is mathematical consistency and numerical anomalies. "
             "You are highly precise and conservative — you only report FAKE if the evidence is clear."
         ),
-        temperature=0.1,
+        temperature=0.2,
         max_tokens=1024,
         focus_skills=["math_consistency", "contextual_validation"],
     )
@@ -129,7 +128,7 @@ def make_document_examiner() -> QwenJudge:
             "Your primary focus is typographic anomalies, visual artifacts, and layout inconsistencies. "
             "You are thorough and detail-oriented, trained to catch subtle image-level manipulations."
         ),
-        temperature=0.7,
+        temperature=0.6,
         max_tokens=1024,
         focus_skills=["typography_analysis", "visual_authenticity", "layout_structure"],
     )

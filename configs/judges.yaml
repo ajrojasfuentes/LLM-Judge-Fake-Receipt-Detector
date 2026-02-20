@@ -28,7 +28,7 @@ judges:
 
   - id: judge_3
     name: "Holistic Auditor"
-    model: "OpenGVLab/InternVL2_5-78B"
+    model: "zai-org/GLM-4.5V"
     provider: "huggingface"
     temperature: 0.3
     max_tokens: 1024

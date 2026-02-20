@@ -68,7 +68,7 @@ def cmd_run(args):
     from pipeline.dataset import DatasetManager
     from pipeline.sampler import ReceiptSampler
     from judges.qwen_judge import make_forensic_accountant, make_document_examiner
-    from judges.internvl_judge import InternVLJudge
+    from judges.glm_judge import GLMJudge
     from judges.voting import VotingEngine
     import yaml
 
@@ -81,7 +81,7 @@ def cmd_run(args):
     judges = [
         make_forensic_accountant(),
         make_document_examiner(),
-        InternVLJudge(),
+        GLMJudge(),
     ]
 
     cfg_path = Path("configs/judges.yaml")
@@ -198,7 +198,7 @@ def cmd_demo(args):
     """Quick demo: run 3 judges on a single receipt and print results."""
     from pipeline.dataset import DatasetManager
     from judges.qwen_judge import make_forensic_accountant, make_document_examiner
-    from judges.internvl_judge import InternVLJudge
+    from judges.glm_judge import GLMJudge
     from judges.voting import VotingEngine
 
     receipt_id = args.receipt_id
@@ -237,7 +237,7 @@ def cmd_demo(args):
     judges = [
         make_forensic_accountant(),
         make_document_examiner(),
-        InternVLJudge(),
+        GLMJudge(),
     ]
     engine = VotingEngine()
 
