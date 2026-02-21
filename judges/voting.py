@@ -10,9 +10,8 @@ Uncertainty is calculated from three components (more severe than raw confidence
   1. Confidence component (55%): nonlinear penalty — medium/low confidence is
      penalised more harshly than pure (100 - conf).
   2. Skill component (35%): fraction of skill_results that are "uncertain".
-  3. Consistency penalty (up to 12%): penalises judges that claim high risk
-     but also very high confidence (overconfident), or low confidence on
-     clear-cut cases (overcautious).
+  3. Consistency penalty (up to 12%): penalises incoherent outputs — FAKE with
+     low risk, REAL with high risk, or UNCERTAIN with confidence > 75%.
 
 Vote weights replace the binary 0/1 majority count:
     FAKE_score = sum of weights for all judges that voted FAKE
@@ -153,8 +152,8 @@ class VotingEngine:
           - Confidence component (55%): nonlinear; medium-low confidence is
             penalised more than a linear scale would suggest.
           - Skill component (35%): fraction of skill_results that are "uncertain".
-          - Consistency penalty: penalises overconfidence on high-risk cases
-            and over-caution on clear-cut assessments.
+          - Consistency penalty: penalises incoherence between label, risk level,
+            and confidence (FAKE+low-risk, REAL+high-risk, UNCERTAIN+high-confidence).
 
         Returns a float in [0, 1] where 0 = completely certain, 1 = no idea.
         """
@@ -177,13 +176,16 @@ class VotingEngine:
         n_uncertain = sum(1 for v in result.skill_results.values() if v == "uncertain")
         u_skill = n_uncertain / n_skills
 
-        # -- Consistency penalty --
+        # -- Consistency penalty: penalise incoherence between label, risk, and confidence --
         consistency_penalty = 0.0
-        if result.risk_level == "high" and result.confidence > 80.0:
-            # Claims high risk but also very confident -> suspicious overconfidence
+        if result.label == "FAKE" and result.risk_level == "low":
+            # Claiming FAKE while assigning low risk is internally incoherent
             consistency_penalty = 0.12
-        elif result.risk_level == "low" and result.confidence < 65.0:
-            # Low risk but not confident -> unnecessary caution signals uncertainty
+        elif result.label == "REAL" and result.risk_level == "high":
+            # Claiming REAL while assigning high risk is internally incoherent
+            consistency_penalty = 0.12
+        elif result.label == "UNCERTAIN" and result.confidence > 75.0:
+            # High confidence paired with UNCERTAIN label is self-contradictory
             consistency_penalty = 0.08
 
         # -- Weighted combination --
