@@ -138,8 +138,9 @@ class CPIResult:
 
 def _ncc(patch1: np.ndarray, patch2: np.ndarray) -> float:
     """Normalised cross-correlation of two equal-sized patches (float in [-1, 1])."""
-    p1 = patch1.astype(np.float64)
-    p2 = patch2.astype(np.float64)
+    # Use copy=True to avoid in-place mutation when inputs are already float64
+    p1 = patch1.astype(np.float64, copy=True)
+    p2 = patch2.astype(np.float64, copy=True)
     p1 -= p1.mean()
     p2 -= p2.mean()
     n1 = np.sqrt(np.sum(p1 ** 2))
@@ -334,6 +335,7 @@ def _verify_cluster(
     patch_size: int,
     ncc_threshold: float,
     max_sample: int,
+    block_size: int = 16,
 ) -> Tuple[float, float, int, Tuple[int, int]]:
     """NCC-verify a cluster of candidate pairs.
 
@@ -343,6 +345,7 @@ def _verify_cluster(
     """
     h, w = gray.shape[:2]
     half = patch_size // 2
+    block_half = block_size // 2  # offset to block centre
 
     # Sample up to max_sample pairs
     sample_indices = cluster_pair_indices[:max_sample]
@@ -355,9 +358,9 @@ def _verify_cluster(
         xa, ya = positions[idx_a]
         xb, yb = positions[idx_b]
 
-        # Centre the patch on the block centre
-        cxa, cya = xa + half, ya + half
-        cxb, cyb = xb + half, yb + half
+        # Centre the patch on the block centre (block_half), not patch_half
+        cxa, cya = xa + block_half, ya + block_half
+        cxb, cyb = xb + block_half, yb + block_half
 
         # Bounds check
         if (cya - half < 0 or cya + half > h or cxa - half < 0 or cxa + half > w or
@@ -408,13 +411,13 @@ def _build_region_bbox(
         xa, ya = positions[idx_a]
         xb, yb = positions[idx_b]
 
-        # Treat the pair with larger coordinates as "destination"
-        if (abs(dx) + abs(dy)) > 0:
+        # Treat the block with smaller top-left coordinates as "source"
+        if (ya, xa) <= (yb, xb):
             src_xs.append(xa); src_ys.append(ya)
             dst_xs.append(xb); dst_ys.append(yb)
         else:
-            src_xs.append(xa); src_ys.append(ya)
-            dst_xs.append(xb); dst_ys.append(yb)
+            src_xs.append(xb); src_ys.append(yb)
+            dst_xs.append(xa); dst_ys.append(ya)
 
     def _bbox_from_coords(xs, ys):
         if not xs:
@@ -833,6 +836,7 @@ def cpi_analyze(
             patch_size=patch_size,
             ncc_threshold=ncc_threshold,
             max_sample=ncc_sample_pairs,
+            block_size=block_size,
         )
 
         if inlier_ratio < 0.10 or verified_pairs < 3:
@@ -913,7 +917,7 @@ def cpi_analyze(
     clone_area_norm = min(top_pair.clone_area_pct / 5.0, 1.0)
     ocr_bonus = 0.0
     if top_pair.overlaps_total_zone and _ocr_has_keywords(
-            ocr_text, ["total", "grand total", "amount due"]):
+            ocr_text, ["total", "grand total", "amount due", "amount"]):
         ocr_bonus = 0.10
     elif top_pair.overlaps_tax_zone and _ocr_has_keywords(ocr_text, ["tax", "gst", "vat"]):
         ocr_bonus = 0.05
