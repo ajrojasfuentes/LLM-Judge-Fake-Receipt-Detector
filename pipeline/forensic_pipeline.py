@@ -4,13 +4,16 @@ a rich structured context for the VLM judges.
 
 Flow
 ----
-  1. crop_receipt        — detect & deskew receipt; produce shared grayscale
-  2. mela_analyze        — enhanced Multi-Quality ELA with ROIs & percentiles
-  3. noise_analyze       — block noise-variance analysis with ROIs
-  4. frequency_analyze   — DCT/FFT frequency analysis with ROIs
-  5. cpi_analyze         — dense block copy-paste detection gated by above ROIs
-  6. OCR extraction      — parse paired .txt transcription; arithmetic check
-  7. ForensicContext      — structured result with rich prompt section for judges
+  1. mela_analyze        — enhanced Multi-Quality ELA with ROIs & percentiles
+  2. noise_analyze       — block noise-variance analysis with ROIs
+  3. frequency_analyze   — DCT/FFT frequency analysis with ROIs
+  4. cpi_analyze         — dense block copy-paste detection gated by above ROIs
+  5. OCR extraction      — parse paired .txt transcription; arithmetic check
+  6. ForensicContext      — structured result with rich prompt section for judges
+
+Note: receipt cropping/deskewing has been removed. All analyses operate
+directly on the original PNG to avoid introducing resize artefacts or
+coordinate mismatches between tools.
 
 Usage
 -----
@@ -36,7 +39,7 @@ _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from forensic.utils import load_image_rgb, crop_receipt, ROI
+from forensic.utils import load_image_rgb, ROI
 from forensic.mela import mela_analyze, MELAResult
 from forensic.noisemap import noise_analyze, NoiseResult
 from forensic.frequencydct import frequency_analyze, FrequencyResult
@@ -61,7 +64,8 @@ class ForensicContext:
     receipt_area_ratio: Optional[float] = None      # cropped area / original area
 
     # ── Multi-ELA (enhanced) ─────────────────────────────────────────────────
-    multi_ela_suspicious_ratio: Optional[float] = None
+    multi_ela_suspicious_ratio: Optional[float] = None          # flagged / total pixels
+    multi_ela_suspicious_ratio_nonwhite: Optional[float] = None # flagged / nonwhite pixels (primary)
     multi_ela_mean_variance: Optional[float] = None
     multi_ela_max_variance: Optional[float] = None
     multi_ela_divergent_blocks: Optional[int] = None
@@ -134,15 +138,6 @@ class ForensicContext:
         )
         lines.append("")
 
-        # ── Crop info ──
-        if self.crop_method is not None:
-            ratio_str = f"{self.receipt_area_ratio:.0%}" if self.receipt_area_ratio is not None else "n/a"
-            lines.append(
-                f"[Receipt Pre-processing]\n"
-                f"  Crop method: {self.crop_method} | Receipt area ratio: {ratio_str}"
-            )
-            lines.append("")
-
         # ── Multi-ELA ──
         if self.multi_ela_suspicious_ratio is not None:
             level = self._interpret_mela()
@@ -150,6 +145,12 @@ class ForensicContext:
             p90_str = f"{pct.get('p90', 0):.2f}"
             p95_str = f"{pct.get('p95', 0):.2f}"
             p99_str = f"{pct.get('p99', 0):.2f}"
+            total_ratio_str = f"{self.multi_ela_suspicious_ratio:.2%}"
+            nw_ratio_str = (
+                f"{self.multi_ela_suspicious_ratio_nonwhite:.2%}"
+                if self.multi_ela_suspicious_ratio_nonwhite is not None
+                else "n/a"
+            )
             div_str = ""
             if self.multi_ela_divergent_blocks is not None and self.multi_ela_total_blocks:
                 div_str = (
@@ -169,7 +170,8 @@ class ForensicContext:
 
             lines.append(
                 f"[Multi-ELA — Cross-Quality Compression Variance]: {level}\n"
-                f"  Suspicious pixel ratio : {self.multi_ela_suspicious_ratio:.2%}"
+                f"  Suspicious ratio (total)    : {total_ratio_str}  "
+                f"(nonwhite only: {nw_ratio_str}) ← primary signal"
                 f"{div_str}"
                 f"\n  Percentiles (p90/p95/p99): {p90_str} / {p95_str} / {p99_str}"
                 f"{tail_str}"
@@ -349,7 +351,7 @@ class ForensicContext:
 
         # Gather interpreted levels for each available signal
         signal_levels: List[tuple] = []
-        if self.multi_ela_suspicious_ratio is not None:
+        if self.multi_ela_suspicious_ratio is not None or self.multi_ela_suspicious_ratio_nonwhite is not None:
             signal_levels.append(("MELA", self._interpret_mela()))
         if self.noise_anomalous_ratio is not None:
             signal_levels.append(("Noise", self._interpret_noise()))
@@ -406,11 +408,14 @@ class ForensicContext:
     # ── Interpretation helpers ───────────────────────────────────────────────
 
     def _interpret_mela(self) -> str:
-        r = self.multi_ela_suspicious_ratio or 0.0
-        # Thresholds calibrated for subtle CPI forgeries (single-digit change ≈ 1-6% pixels).
-        if r > 0.06:    # original 0.10 — too high for single-digit CPI edits
+        # Use nonwhite ratio as primary signal — avoids dilution by white background.
+        # Falls back to total ratio if nonwhite is unavailable.
+        r = self.multi_ela_suspicious_ratio_nonwhite or self.multi_ela_suspicious_ratio or 0.0
+        # Thresholds calibrated for subtle CPI forgeries operating on text content.
+        # Typical clean receipt: 2-5% nonwhite flagged; forged: 6-15%+.
+        if r > 0.12:    # > 12% of ink pixels anomalous
             return "⚠ HIGH — significant cross-quality variance detected"
-        elif r > 0.015:  # original 0.03
+        elif r > 0.04:  # > 4% of ink pixels anomalous
             return "⚡ MODERATE — some suspicious areas"
         return "✓ LOW — consistent compression behaviour"
 
@@ -598,22 +603,14 @@ class ForensicPipeline:
         prefix = image_path.stem
 
         # ------------------------------------------------------------------
-        # 1. Crop / deskew
+        # 1. Derive grayscale from the original image (no crop/deskew).
         # ------------------------------------------------------------------
-        try:
-            crop_result = crop_receipt(image_rgb, output_dir=out_dir, prefix=prefix)
-            ctx.crop_method = crop_result.crop_method
-            ctx.receipt_area_ratio = crop_result.receipt_area_ratio
-            ctx.saved_images.update({
-                f"crop_{k}": v for k, v in crop_result.saved_images.items()
-            })
-            cropped_rgb = crop_result.cropped_rgb
-            cropped_gray = crop_result.cropped_gray
-        except Exception as exc:
-            ctx.errors["crop"] = f"{type(exc).__name__}: {exc}"
-            cropped_rgb = image_rgb
-            cropped_gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-            ctx.crop_method = "none"
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        # Keep variable names used downstream; they now refer to the full image.
+        cropped_rgb = image_rgb
+        cropped_gray = gray
+        ctx.crop_method = "none"
+        ctx.receipt_area_ratio = 1.0
 
         # ------------------------------------------------------------------
         # 2. Multi-ELA
@@ -621,8 +618,7 @@ class ForensicPipeline:
         mela_result: Optional[MELAResult] = None
         try:
             mela_result = mela_analyze(
-                image_rgb=cropped_rgb,
-                cropped_gray=cropped_gray,
+                image_rgb=image_rgb,
                 output_dir=out_dir,
                 prefix=prefix,
                 qualities=self._mela_qualities,
@@ -633,6 +629,7 @@ class ForensicPipeline:
                 max_rois=self._mela_max_rois,
             )
             ctx.multi_ela_suspicious_ratio = mela_result.suspicious_ratio
+            ctx.multi_ela_suspicious_ratio_nonwhite = mela_result.suspicious_ratio_nonwhite
             ctx.multi_ela_mean_variance = mela_result.mean_variance
             ctx.multi_ela_max_variance = mela_result.max_variance
             ctx.multi_ela_divergent_blocks = mela_result.divergent_blocks
@@ -854,7 +851,9 @@ class ForensicPipeline:
 
             if verbose:
                 signals = []
-                if ctx.multi_ela_suspicious_ratio is not None:
+                if ctx.multi_ela_suspicious_ratio_nonwhite is not None:
+                    signals.append(f"MELA_nw={ctx.multi_ela_suspicious_ratio_nonwhite:.1%}")
+                elif ctx.multi_ela_suspicious_ratio is not None:
                     signals.append(f"MELA={ctx.multi_ela_suspicious_ratio:.0%}")
                 if ctx.cpi_level is not None:
                     signals.append(f"CPI={ctx.cpi_level}({ctx.cpi_confidence:.2f})")

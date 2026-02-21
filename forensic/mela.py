@@ -6,11 +6,19 @@ with a production-grade pipeline that adds:
 
 * **Multi-scale block analysis** across several block sizes (fused via
   pixel-wise max).
-* **Edge-aware suppression** so that natural high-contrast edges (text
-  boundaries, table lines) do not dominate the variance map.
-* **Adaptive thresholding** (percentile or MAD-based) instead of a fixed
-  variance cutoff.
-* **Connected-component ROI extraction** with area filtering and scoring.
+* **Edge-aware suppression** (low k=0.15) so only the strongest natural
+  edges are mildly down-weighted; character interiors are fully preserved.
+* **Adaptive thresholding over positive values only** (percentile or
+  MAD-based) to prevent collapse when a large fraction of the variance map
+  is zero (flat/background regions).
+* **Dual suspicious-ratio reporting** — total (fraction of all pixels) and
+  nonwhite (fraction of ink/content pixels only). Receipt white space
+  dilutes the total ratio severely; the nonwhite ratio is the primary
+  forensic signal.
+* **Connected-component ROI extraction** with composite scoring (mean +
+  peak variance) to surface concentrated anomalies over diffuse noise.
+* **Morphological consolidation** of the binary mask before CC analysis
+  to merge nearby suspicious pixels from the same pasted region.
 * **Robust percentile statistics** (p50 .. p99, tail mass).
 * **Early-exit optimisation** that skips remaining JPEG quality levels once
   a high suspicious ratio is already detected.
@@ -21,8 +29,8 @@ Only ``cv2``, ``numpy``, and ``PIL`` are required.
 Typical usage
 -------------
 >>> from forensic.mela import mela_analyze
->>> result = mela_analyze(image_rgb, cropped_gray, output_dir=Path("out"))
->>> print(result.suspicious_ratio, result.top_rois)
+>>> result = mela_analyze(image_rgb, output_dir=Path("out"))
+>>> print(result.suspicious_ratio_nonwhite, result.top_rois)
 """
 
 from __future__ import annotations
@@ -64,7 +72,8 @@ class MELAResult:
     # Global statistics
     mean_variance: float
     max_variance: float
-    suspicious_ratio: float           # fraction above adaptive threshold
+    suspicious_ratio: float           # flagged / total_pixels (diluted by white space)
+    suspicious_ratio_nonwhite: float  # flagged / nonwhite_pixels (primary metric)
 
     # Block-level
     divergent_blocks: int
@@ -77,7 +86,7 @@ class MELAResult:
 
     # Enhanced statistics
     percentiles: Dict[str, float]     # {"p50", "p75", "p90", "p95", "p99"}
-    tail_mass_pct: float              # % of pixels above p95
+    tail_mass_pct: float              # % of nonwhite pixels above p95
     threshold_used: float             # adaptive threshold that was applied
     threshold_method: str             # "percentile" or "mad"
 
@@ -165,9 +174,14 @@ def _extract_rois(
     variance_map: np.ndarray,
     max_rois: int,
     min_component_area_px: int,
+    global_max_var: float = 1.0,
 ) -> Tuple[int, float, List[ROI]]:
     """Run connected-component analysis on *binary_mask* and return
     ``(components_count, largest_component_area_pct, top_rois)``.
+
+    ROI scoring uses a composite of mean and peak variance so that
+    concentrated high-variance spots (typical of pasted foreign content)
+    rank above diffuse low-variance regions.
 
     Each ROI carries ``source="mela"``."""
     h, w = binary_mask.shape[:2]
@@ -178,6 +192,8 @@ def _extract_rois(
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         mask_u8, connectivity=8,
     )
+
+    global_max_var = max(global_max_var, 1e-6)
 
     # Label 0 is background
     components: List[dict] = []
@@ -190,9 +206,16 @@ def _extract_rois(
         bw = int(stats[label_idx, cv2.CC_STAT_WIDTH])
         bh = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
 
-        # Mean score inside the component
         component_mask = (labels == label_idx)
-        mean_score = float(variance_map[component_mask].mean())
+        comp_values = variance_map[component_mask]
+        mean_score = float(comp_values.mean())
+        peak_score = float(comp_values.max())
+
+        # Composite score: rewards concentrated high-variance spots.
+        # A small region with very high peak ranks above a large region
+        # with moderate mean. Normalise peak by global max so it's [0, 1].
+        composite_score = mean_score * (1.0 + peak_score / global_max_var)
+
         area_pct = area / total_pixels * 100.0
 
         components.append({
@@ -201,6 +224,8 @@ def _extract_rois(
             "area_pct": area_pct,
             "bbox": (x, y, bw, bh),
             "mean_score": mean_score,
+            "peak_score": peak_score,
+            "composite_score": composite_score,
             "centroid": (float(centroids[label_idx][0]), float(centroids[label_idx][1])),
         })
 
@@ -211,18 +236,20 @@ def _extract_rois(
 
     largest_area_pct = max(c["area_pct"] for c in components)
 
-    # Sort by mean_score descending, take top-N
-    components.sort(key=lambda c: c["mean_score"], reverse=True)
+    # Sort by composite score descending, take top-N
+    components.sort(key=lambda c: c["composite_score"], reverse=True)
     top = components[:max_rois]
 
     rois: List[ROI] = []
     for c in top:
         x, y, bw, bh = c["bbox"]
-        # Build position note for the judge
         cx, cy = c["centroid"]
         h_pos = "left" if cx < w * 0.33 else ("right" if cx > w * 0.67 else "center")
         v_pos = "top" if cy < h * 0.33 else ("bottom" if cy > h * 0.67 else "middle")
-        notes = f"{v_pos}-{h_pos} | area={c['area']}px ({c['area_pct']:.1f}%)"
+        notes = (
+            f"{v_pos}-{h_pos} | area={c['area']}px ({c['area_pct']:.1f}%)"
+            f" | peak_var={c['peak_score']:.1f}"
+        )
         rois.append(
             ROI(
                 bbox=(x, y, bw, bh),
@@ -250,7 +277,6 @@ def _draw_rois(
         pt2 = (x + bw, y + bh)
         cv2.rectangle(vis, pt1, pt2, color, thickness)
         label_text = f"ROI-{i+1}  s={roi.score:.2f}"
-        # Place label above the box; fall back to inside if at top edge
         label_y = y - 6 if y > 16 else y + 16
         cv2.putText(
             vis, label_text, (x, label_y),
@@ -265,7 +291,6 @@ def _draw_rois(
 
 def mela_analyze(
     image_rgb: np.ndarray,
-    cropped_gray: np.ndarray,
     *,
     output_dir: Optional[Path] = None,
     prefix: str = "",
@@ -274,27 +299,25 @@ def mela_analyze(
     # Multi-scale block sizes
     block_sizes: Tuple[int, ...] = (8, 16, 32),
     # Adaptive threshold
-    threshold_method: str = "percentile",  # "percentile" or "mad"
+    threshold_method: str = "mad",       # default changed from "percentile" to "mad"
     threshold_percentile: float = 98.0,
     mad_z_threshold: float = 3.5,
     # ROI extraction
     max_rois: int = 5,
-    min_component_area_px: int = 100,
-    # Edge suppression
-    edge_suppression_k: float = 0.5,
+    min_component_area_px: int = 50,     # lowered from 100 to catch small forged regions
+    # Edge suppression — low k preserves signal in character interiors
+    edge_suppression_k: float = 0.15,    # lowered from 0.5; CPI forgeries appear at char boundaries
     # Early exit (skip remaining qualities if HIGH already detected)
     early_exit: bool = True,
-    early_exit_ratio: float = 0.10,
+    early_exit_ratio: float = 0.10,      # fraction of nonwhite pixels
 ) -> MELAResult:
     """Run Enhanced Multi-Quality Error Level Analysis on a receipt image.
 
     Parameters
     ----------
     image_rgb : np.ndarray
-        Original receipt image in RGB uint8 (H, W, 3).
-    cropped_gray : np.ndarray
-        Grayscale version of the (possibly cropped) receipt, uint8 (H, W).
-        Used for edge-weight computation.
+        Original receipt image in RGB uint8 (H, W, 3).  Grayscale is
+        computed internally — no pre-cropped version is required.
     output_dir : Path, optional
         Directory to save output images.  Nothing is saved when *None*.
     prefix : str
@@ -304,10 +327,11 @@ def mela_analyze(
     block_sizes : tuple of int
         Block sizes for multi-scale block analysis.
     threshold_method : str
-        ``"percentile"`` or ``"mad"`` for adaptive thresholding.
+        ``"mad"`` (default) or ``"percentile"`` for adaptive thresholding.
+        Both operate on **positive values only** to prevent collapse when
+        many background/flat pixels carry zero variance.
     threshold_percentile : float
-        Percentile used when *threshold_method* is ``"percentile"``
-        (applied to non-white pixels only).
+        Percentile used when *threshold_method* is ``"percentile"``.
     mad_z_threshold : float
         Number of MADs above median for the ``"mad"`` method.
     max_rois : int
@@ -315,13 +339,13 @@ def mela_analyze(
     min_component_area_px : int
         Minimum connected-component area (pixels) to keep as ROI.
     edge_suppression_k : float
-        Strength of edge-aware suppression.  Higher values suppress more
-        aggressively near edges.
+        Strength of edge-aware suppression.  Lower k = milder suppression,
+        preserving signal near character edges where CPI forgeries appear.
     early_exit : bool
         If *True*, stop adding JPEG quality levels once the running
-        suspicious ratio exceeds *early_exit_ratio*.
+        suspicious ratio (relative to nonwhite pixels) exceeds *early_exit_ratio*.
     early_exit_ratio : float
-        Threshold for the early-exit check.
+        Threshold for the early-exit check (fraction of nonwhite pixels).
 
     Returns
     -------
@@ -336,9 +360,16 @@ def mela_analyze(
     h, w = image_rgb.shape[:2]
     total_pixels = max(h * w, 1)
 
-    # Handle degenerate images (all-white, tiny, etc.)
     if h < 4 or w < 4:
         return _empty_result(qualities, list(block_sizes))
+
+    # Compute grayscale internally — no cropped version needed
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+
+    # Compute non-white mask early so we can use it for the quick ratio in early-exit
+    nonwhite_mask = compute_nonwhite_mask(gray, threshold=240)
+    nonwhite_bool = nonwhite_mask.astype(bool)
+    nonwhite_count = max(int(nonwhite_bool.sum()), 1)
 
     pil_img = Image.fromarray(image_rgb)
 
@@ -347,25 +378,27 @@ def mela_analyze(
     # ------------------------------------------------------------------
     ela_maps: List[np.ndarray] = []
     used_qualities: List[int] = []
-    running_susp_ratio = 0.0
 
     for q in qualities:
         emap = _compress_and_diff(pil_img, image_rgb, q)
         ela_maps.append(emap)
         used_qualities.append(q)
 
-        # Early-exit check: compute quick suspicious ratio on running stack
+        # Early-exit check: compute quick suspicious ratio relative to nonwhite pixels
         if early_exit and len(ela_maps) >= 2:
             stack_tmp = np.stack(ela_maps, axis=2)
             var_tmp = np.var(stack_tmp, axis=2)
-            quick_thresh = np.percentile(var_tmp[var_tmp > 0], 95) if np.any(var_tmp > 0) else 1.0
-            running_susp_ratio = float((var_tmp > quick_thresh).sum()) / total_pixels
-            if running_susp_ratio > early_exit_ratio:
-                logger.debug(
-                    "MELA early-exit at quality %d (suspicious_ratio=%.4f > %.4f)",
-                    q, running_susp_ratio, early_exit_ratio,
-                )
-                break
+            pos_vals_tmp = var_tmp[nonwhite_bool & (var_tmp > 0)]
+            if pos_vals_tmp.size >= 10:
+                quick_thresh = float(np.percentile(pos_vals_tmp, 95))
+                quick_flagged = int(((var_tmp > quick_thresh) & nonwhite_bool).sum())
+                running_susp_ratio = quick_flagged / nonwhite_count
+                if running_susp_ratio > early_exit_ratio:
+                    logger.debug(
+                        "MELA early-exit at quality %d (nw_susp_ratio=%.4f > %.4f)",
+                        q, running_susp_ratio, early_exit_ratio,
+                    )
+                    break
 
     qualities_tuple: Tuple[int, ...] = tuple(used_qualities)
 
@@ -376,27 +409,29 @@ def mela_analyze(
     variance_map = np.var(ela_stack, axis=2)                   # (H, W) float64
 
     # ------------------------------------------------------------------
-    # 3. Edge-aware suppression
+    # 3. Edge-aware suppression (mild — preserves signal near char edges)
     # ------------------------------------------------------------------
-    # Ensure cropped_gray matches spatial dimensions of image_rgb
-    if cropped_gray.shape[:2] != (h, w):
-        cropped_gray = cv2.resize(cropped_gray, (w, h), interpolation=cv2.INTER_AREA)
-
-    edge_weight = compute_edge_weight_map(cropped_gray, k=edge_suppression_k)
+    edge_weight = compute_edge_weight_map(gray, k=edge_suppression_k)
     variance_map = variance_map * edge_weight
 
     # ------------------------------------------------------------------
-    # 4. Non-white mask
+    # 4. Non-white mask — zero out white background pixels
     # ------------------------------------------------------------------
-    nonwhite_mask = compute_nonwhite_mask(cropped_gray, threshold=240)
-    nonwhite_bool = nonwhite_mask.astype(bool)   # uint8 (0/255) → bool for indexing
     variance_map[~nonwhite_bool] = 0.0
 
     # Pixels used for statistics (non-white only)
     nw_values = variance_map[nonwhite_bool]
     if nw_values.size == 0:
-        # Entire image is white / background
         return _empty_result(qualities_tuple, list(block_sizes))
+
+    # **Positive values only** for threshold computation.
+    # Many background-adjacent or flat nonwhite pixels carry zero variance;
+    # including them would drag the MAD/percentile threshold toward zero,
+    # causing threshold collapse or near-100% flagging.
+    pos_nw_values = nw_values[nw_values > 1e-6]
+    if pos_nw_values.size < max(10, nw_values.size // 100):
+        # Very few positive values — image is nearly flat; fall back to all nw
+        pos_nw_values = nw_values
 
     # ------------------------------------------------------------------
     # 5. Multi-scale block analysis
@@ -415,71 +450,80 @@ def mela_analyze(
         upsampled = _upsample_block_map(block_mean_map, bs, h, w)
         fused_score_map = np.maximum(fused_score_map, upsampled)
 
-    # Ensure we have at least some blocks counted
     if total_block_count == 0:
         total_block_count = 1
 
     blocks_divergent_ratio = total_divergent / total_block_count
 
     # ------------------------------------------------------------------
-    # 6. Adaptive threshold
+    # 6. Adaptive threshold — computed over POSITIVE values only
     # ------------------------------------------------------------------
     if threshold_method == "mad":
-        median_val = float(np.median(nw_values))
-        mad_val = float(np.median(np.abs(nw_values - median_val)))
-        # Scale MAD to approximate standard deviation for normal distributions
+        median_val = float(np.median(pos_nw_values))
+        mad_val = float(np.median(np.abs(pos_nw_values - median_val)))
+        # Scale MAD to σ-equivalent for normal distributions
         threshold_val = median_val + mad_z_threshold * mad_val * 1.4826
         actual_method = "mad"
     else:
-        # Default: percentile
-        threshold_val = float(np.percentile(nw_values, threshold_percentile))
+        # "percentile" — applied to positive values only
+        threshold_val = float(np.percentile(pos_nw_values, threshold_percentile))
         actual_method = "percentile"
 
-    # Ensure threshold is not degenerate
+    # Guard against degenerate threshold
     threshold_val = max(threshold_val, 1e-12)
 
-    # Binary mask from adaptive threshold
+    # Binary mask from adaptive threshold (restricted to nonwhite)
     binary_mask = (variance_map > threshold_val).astype(np.uint8) * 255
-    # Restrict to non-white
     binary_mask[~nonwhite_bool] = 0
 
-    suspicious_ratio = float(np.count_nonzero(binary_mask) / total_pixels)
+    # ------------------------------------------------------------------
+    # 6b. Morphological consolidation
+    # Dilate then erode (closing) to merge nearby suspicious pixels from
+    # the same pasted region before connected-component analysis.
+    # Kernel size 3×3, 1 iteration — conservative to avoid inflating ROIs.
+    # ------------------------------------------------------------------
+    if np.any(binary_mask):
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        # Re-apply nonwhite restriction (morphology may expand into white area)
+        binary_mask[~nonwhite_bool] = 0
+
+    # ------------------------------------------------------------------
+    # 6c. Dual suspicious-ratio reporting
+    # ------------------------------------------------------------------
+    n_flagged = int(np.count_nonzero(binary_mask))
+    suspicious_ratio = n_flagged / total_pixels          # diluted by white space
+    suspicious_ratio_nonwhite = n_flagged / nonwhite_count  # primary forensic signal
 
     # ------------------------------------------------------------------
     # 7. ROI extraction
     # ------------------------------------------------------------------
+    global_max_var = float(variance_map.max()) if variance_map.max() > 0 else 1.0
     components_count, largest_component_area_pct, top_rois = _extract_rois(
-        binary_mask, variance_map, max_rois, min_component_area_px,
+        binary_mask, variance_map, max_rois, min_component_area_px, global_max_var,
     )
 
     # ------------------------------------------------------------------
-    # 8. Robust statistics
+    # 8. Robust statistics (over positive nonwhite values for meaningful percentiles)
     # ------------------------------------------------------------------
-    p50 = float(np.percentile(nw_values, 50))
-    p75 = float(np.percentile(nw_values, 75))
-    p90 = float(np.percentile(nw_values, 90))
-    p95 = float(np.percentile(nw_values, 95))
-    p99 = float(np.percentile(nw_values, 99))
+    p50 = float(np.percentile(pos_nw_values, 50))
+    p75 = float(np.percentile(pos_nw_values, 75))
+    p90 = float(np.percentile(pos_nw_values, 90))
+    p95 = float(np.percentile(pos_nw_values, 95))
+    p99 = float(np.percentile(pos_nw_values, 99))
 
     percentiles: Dict[str, float] = {
-        "p50": p50,
-        "p75": p75,
-        "p90": p90,
-        "p95": p95,
-        "p99": p99,
+        "p50": p50, "p75": p75, "p90": p90, "p95": p95, "p99": p99,
     }
 
-    # Tail mass: % of non-white pixels above p95
-    if nw_values.size > 0:
-        tail_mass_pct = float(np.sum(nw_values > p95) / nw_values.size * 100.0)
-    else:
-        tail_mass_pct = 0.0
+    # Tail mass: % of nonwhite pixels above p95
+    tail_mass_pct = float(np.sum(nw_values > p95) / max(nw_values.size, 1) * 100.0)
 
     # ------------------------------------------------------------------
     # Visualisation
     # ------------------------------------------------------------------
-    # Amplified grayscale: scale variance for visibility (8x amplification)
-    variance_display = np.clip(variance_map * 8.0, 0, 255).astype(np.uint8)
+    # Amplified grayscale: 16x amplification (up from 8x) for better visibility
+    variance_display = np.clip(variance_map * 16.0, 0, 255).astype(np.uint8)
     variance_color = apply_colormap(variance_display)
 
     # ------------------------------------------------------------------
@@ -500,7 +544,6 @@ def mela_analyze(
         p_col = save_image(variance_color, output_dir, name_color)
         saved_images["color"] = str(p_col)
 
-        # ROI visualisation
         if top_rois:
             roi_vis = _draw_rois(image_rgb, top_rois)
         else:
@@ -515,31 +558,25 @@ def mela_analyze(
     max_variance = float(variance_map.max())
 
     return MELAResult(
-        # Core maps
         variance_map=variance_map,
         variance_display=variance_display,
         variance_color=variance_color,
-        # Global statistics
         mean_variance=mean_variance,
         max_variance=max_variance,
         suspicious_ratio=suspicious_ratio,
-        # Block-level
+        suspicious_ratio_nonwhite=suspicious_ratio_nonwhite,
         divergent_blocks=total_divergent,
         total_blocks=total_block_count,
         blocks_divergent_ratio=blocks_divergent_ratio,
-        # Config
         qualities_used=qualities_tuple,
         scales_used=list(block_sizes),
-        # Enhanced statistics
         percentiles=percentiles,
         tail_mass_pct=tail_mass_pct,
         threshold_used=threshold_val,
         threshold_method=actual_method,
-        # Connected components / ROIs
         components_count=components_count,
         largest_component_area_pct=largest_component_area_pct,
         top_rois=top_rois,
-        # Saved image paths
         saved_images=saved_images,
     )
 
@@ -552,8 +589,7 @@ def _empty_result(
     qualities_used: Tuple[int, ...],
     scales_used: List[int],
 ) -> MELAResult:
-    """Return a zeroed-out ``MELAResult`` for degenerate inputs (all-white
-    images, images too small to analyse, etc.)."""
+    """Return a zeroed-out ``MELAResult`` for degenerate inputs."""
     empty_map = np.zeros((1, 1), dtype=np.float64)
     empty_u8 = np.zeros((1, 1), dtype=np.uint8)
     empty_bgr = np.zeros((1, 1, 3), dtype=np.uint8)
@@ -565,6 +601,7 @@ def _empty_result(
         mean_variance=0.0,
         max_variance=0.0,
         suspicious_ratio=0.0,
+        suspicious_ratio_nonwhite=0.0,
         divergent_blocks=0,
         total_blocks=0,
         blocks_divergent_ratio=0.0,
