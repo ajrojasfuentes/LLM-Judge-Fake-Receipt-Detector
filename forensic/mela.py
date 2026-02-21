@@ -389,10 +389,11 @@ def mela_analyze(
     # 4. Non-white mask
     # ------------------------------------------------------------------
     nonwhite_mask = compute_nonwhite_mask(cropped_gray, threshold=240)
-    variance_map[~nonwhite_mask] = 0.0
+    nonwhite_bool = nonwhite_mask.astype(bool)   # uint8 (0/255) → bool for indexing
+    variance_map[~nonwhite_bool] = 0.0
 
     # Pixels used for statistics (non-white only)
-    nw_values = variance_map[nonwhite_mask]
+    nw_values = variance_map[nonwhite_bool]
     if nw_values.size == 0:
         # Entire image is white / background
         return _empty_result(qualities_tuple, list(block_sizes))
@@ -440,7 +441,7 @@ def mela_analyze(
     # Binary mask from adaptive threshold
     binary_mask = (variance_map > threshold_val).astype(np.uint8) * 255
     # Restrict to non-white
-    binary_mask[~nonwhite_mask] = 0
+    binary_mask[~nonwhite_bool] = 0
 
     suspicious_ratio = float(np.count_nonzero(binary_mask) / total_pixels)
 

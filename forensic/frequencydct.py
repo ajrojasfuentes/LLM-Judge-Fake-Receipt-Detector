@@ -296,15 +296,21 @@ def frequency_analyze(
     # ------------------------------------------------------------------
     # DCT statistics
     # ------------------------------------------------------------------
-    hf_mean = float(hf_ratio_map.mean())
-    hf_std = float(hf_ratio_map.std())
+    if total_blocks == 0:
+        hf_mean = 0.0
+        hf_std = 0.0
+        anomalous_blocks = 0
+        anomalous_ratio = 0.0
+    else:
+        hf_mean = float(hf_ratio_map.mean())
+        hf_std = float(hf_ratio_map.std())
 
-    upper_thresh = hf_mean + 2.0 * hf_std
-    lower_thresh = max(0.0, hf_mean - 2.0 * hf_std)
+        upper_thresh = hf_mean + 2.0 * hf_std
+        lower_thresh = max(0.0, hf_mean - 2.0 * hf_std)
 
-    anomaly_mask = (hf_ratio_map > upper_thresh) | (hf_ratio_map < lower_thresh)
-    anomalous_blocks = int(anomaly_mask.sum())
-    anomalous_ratio = anomalous_blocks / max(1, total_blocks)
+        anomaly_mask = (hf_ratio_map > upper_thresh) | (hf_ratio_map < lower_thresh)
+        anomalous_blocks = int(anomaly_mask.sum())
+        anomalous_ratio = anomalous_blocks / max(1, total_blocks)
 
     # Percentiles of HF ratios (flattened)
     flat_ratios = hf_ratio_map.ravel()
@@ -334,9 +340,10 @@ def frequency_analyze(
     # DCT visualisation
     # ------------------------------------------------------------------
     dct_gray = normalize_to_uint8(hf_ratio_map)
+    # Resize to the original image dimensions so ROI coordinates align correctly
     dct_resized = cv2.resize(
         dct_gray,
-        (cols * block_size, rows * block_size),
+        (w, h),
         interpolation=cv2.INTER_NEAREST,
     )
     dct_color = apply_colormap(dct_resized)

@@ -906,11 +906,14 @@ class ForensicPipeline:
         arithmetic_consistent: Optional[bool] = None
 
         if stated_total is not None and item_sum > 0:
-            discrepancy = round(stated_total - item_sum, 2)
+            # Subtract tax from the discrepancy when a tax line is present
+            effective_sum = round(item_sum + (tax_amount or 0.0), 2)
+            discrepancy = round(stated_total - effective_sum, 2)
             discrepancy_pct = (
                 round(abs(discrepancy) / stated_total * 100, 1) if stated_total > 0 else None
             )
-            arithmetic_consistent = (discrepancy_pct is None or discrepancy_pct < 25.0)
+            # Tolerance of 10% to allow for minor rounding; >10% is suspicious
+            arithmetic_consistent = (discrepancy_pct is None or discrepancy_pct < 10.0)
 
         return {
             "item_count": len(item_amounts),
