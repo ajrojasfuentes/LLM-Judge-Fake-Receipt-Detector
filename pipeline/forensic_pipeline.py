@@ -210,8 +210,10 @@ class ForensicContext:
             if self.noise_top_rois:
                 for i, roi in enumerate(self.noise_top_rois[:2]):
                     bbox = roi.get("bbox", [0, 0, 0, 0])
+                    score = roi.get("score", 0)
                     lines.append(
                         f"  ROI-{i+1}: (x={bbox[0]}, y={bbox[1]}, w={bbox[2]}, h={bbox[3]})"
+                        f"  score={score:.3f}"
                     )
             lines.append(
                 "  → Anomalous noise blocks indicate regions with different compression\n"
@@ -264,13 +266,17 @@ class ForensicContext:
                     src = pair.get("src_bbox", [0, 0, 0, 0])
                     shift = pair.get("shift", [0, 0])
                     ir = pair.get("inlier_ratio", 0)
+                    ncc = pair.get("mean_ncc", 0)
+                    clone_area = pair.get("clone_area_pct", 0)
+                    cluster_sz = pair.get("cluster_size", 0)
                     total_z = "TOTAL ZONE" if pair.get("overlaps_total_zone") else ""
                     tax_z = "TAX ZONE" if pair.get("overlaps_tax_zone") else ""
                     zone_note = " | ".join(z for z in [total_z, tax_z] if z)
                     lines.append(
                         f"  Pair-{i+1}: dest=(x={dst[0]},y={dst[1]},w={dst[2]},h={dst[3]}) "
-                        f"src=(x={src[0]},y={src[1]},w={src[2]},h={src[3]})"
-                        f" shift=({shift[0]:+d},{shift[1]:+d}) inliers={ir:.2f}"
+                        f"src=(x={src[0]},y={src[1]},w={src[2]},h={src[3]})\n"
+                        f"          shift=({shift[0]:+d},{shift[1]:+d}) inliers={ir:.2f}"
+                        f" ncc={ncc:.3f} clone_area={clone_area:.2f}% cluster={cluster_sz}"
                         + (f" [{zone_note}]" if zone_note else "")
                     )
             if self.cpi_level == "HIGH":
@@ -328,33 +334,102 @@ class ForensicContext:
             lines.append(f"[Analysis Errors] {self.errors}")
             lines.append("")
 
+        # ── Signal Convergence Summary ──
+        lines.append(self._build_convergence_summary())
+        lines.append("")
+
         lines.append("=== END FORENSIC PRE-ANALYSIS ===")
+        return "\n".join(lines)
+
+    # ── Convergence summary ──────────────────────────────────────────────────
+
+    def _build_convergence_summary(self) -> str:
+        """Synthesise all signals into a single actionable convergence block."""
+        lines = ["[Signal Convergence Summary]"]
+
+        # Gather interpreted levels for each available signal
+        signal_levels: List[tuple] = []
+        if self.multi_ela_suspicious_ratio is not None:
+            signal_levels.append(("MELA", self._interpret_mela()))
+        if self.noise_anomalous_ratio is not None:
+            signal_levels.append(("Noise", self._interpret_noise()))
+        if self.freq_anomalous_blocks is not None:
+            signal_levels.append(("Frequency", self._interpret_freq()))
+        if self.cpi_level is not None:
+            cpi_icon = (
+                "⚠ HIGH" if self.cpi_level == "HIGH"
+                else ("⚡ MODERATE" if self.cpi_level == "MOD" else "✓ LOW")
+            )
+            signal_levels.append(("CPI", cpi_icon))
+
+        if signal_levels:
+            high_names = [name for name, lvl in signal_levels if "HIGH" in lvl]
+            mod_names = [name for name, lvl in signal_levels if "MODERATE" in lvl or (
+                "MOD" in lvl and "HIGH" not in lvl)]
+            lines.append(
+                f"  Active signals : {len(signal_levels)}"
+                f" | HIGH: {len(high_names)} ({', '.join(high_names) or 'none'})"
+                f" | MODERATE: {len(mod_names)} ({', '.join(mod_names) or 'none'})"
+            )
+
+        # CPI zone overlap warnings (most actionable signal)
+        if self.cpi_top_pairs:
+            total_zone = [p for p in self.cpi_top_pairs if p.get("overlaps_total_zone")]
+            tax_zone = [p for p in self.cpi_top_pairs if p.get("overlaps_tax_zone")]
+            if total_zone:
+                lines.append(
+                    "  ⚠ CPI clone region overlaps TOTAL ZONE"
+                    " — verify stated total against item sum."
+                )
+            if tax_zone:
+                lines.append(
+                    "  ⚠ CPI clone region overlaps TAX ZONE"
+                    " — verify tax amount."
+                )
+
+        # Arithmetic discrepancy alert
+        if self.ocr_arithmetic_report is not None:
+            consistent = self.ocr_arithmetic_report.get("arithmetic_consistent")
+            disc_pct = self.ocr_arithmetic_report.get("discrepancy_pct")
+            if consistent is False:
+                pct_str = f" ({disc_pct:.1f}%)" if disc_pct is not None else ""
+                lines.append(
+                    f"  ⚠ Arithmetic discrepancy detected{pct_str}"
+                    " — total does not match item sum."
+                )
+
+        if len(lines) == 1:
+            lines.append("  No strong convergent signals — forensic signals inconclusive.")
+
         return "\n".join(lines)
 
     # ── Interpretation helpers ───────────────────────────────────────────────
 
     def _interpret_mela(self) -> str:
         r = self.multi_ela_suspicious_ratio or 0.0
-        if r > 0.10:
+        # Thresholds calibrated for subtle CPI forgeries (single-digit change ≈ 1-6% pixels).
+        if r > 0.06:    # original 0.10 — too high for single-digit CPI edits
             return "⚠ HIGH — significant cross-quality variance detected"
-        elif r > 0.03:
+        elif r > 0.015:  # original 0.03
             return "⚡ MODERATE — some suspicious areas"
         return "✓ LOW — consistent compression behaviour"
 
     def _interpret_noise(self) -> str:
         r = self.noise_anomalous_ratio or 0.0
-        if r > 0.15:
+        # Lowered to catch subtle single-region edits characteristic of CPI forgeries.
+        if r > 0.08:    # original 0.15
             return "⚠ HIGH"
-        elif r > 0.05:
+        elif r > 0.025:  # original 0.05
             return "⚡ MODERATE"
         return "✓ LOW"
 
     def _interpret_freq(self) -> str:
         n = self.freq_anomalous_blocks or 0
         ratio = self.freq_anomalous_ratio or 0.0
-        if n > 50 or ratio > 0.15:
+        # Lowered to surface frequency anomalies from small CPI paste areas.
+        if n > 25 or ratio > 0.08:   # original n>50 or ratio>0.15
             return "⚠ HIGH"
-        elif n > 20 or ratio > 0.05:
+        elif n > 8 or ratio > 0.025:  # original n>20 or ratio>0.05
             return "⚡ MODERATE"
         return "✓ LOW"
 

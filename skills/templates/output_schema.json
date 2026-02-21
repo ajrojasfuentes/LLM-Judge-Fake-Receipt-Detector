@@ -1,19 +1,19 @@
 {
-  "label": "FAKE",
-  "confidence": 87.5,
+  "label": "<REAL|FAKE|UNCERTAIN>",
+  "confidence": "<float 0.0–100.0>",
   "reasons": [
-    "Item subtotal does not match the sum of line items by $3.20",
-    "Font family changes between item names and prices",
-    "White rectangle visible over original total field",
-    "Tax rate of 23% is implausible for this region"
+    "<specific observation about printed financial content, under 20 words>",
+    "<second specific observation>",
+    "<optional third observation>",
+    "<optional fourth observation>"
   ],
   "skill_results": {
-    "math_consistency": "fail",
-    "typography": "fail",
-    "visual_authenticity": "fail",
-    "layout_structure": "pass",
-    "contextual_validation": "uncertain"
+    "math_consistency": "<pass|fail|uncertain>",
+    "typography_analysis": "<pass|fail|uncertain>",
+    "visual_authenticity": "<pass|fail|uncertain>",
+    "layout_structure": "<pass|fail|uncertain>",
+    "contextual_validation": "<pass|fail|uncertain>"
   },
-  "flags": ["TOTAL_MISMATCH", "FONT_INCONSISTENCY", "ERASED_CONTENT", "TAX_ERROR"],
-  "risk_level": "high"
+  "flags": ["<FLAG_CODE_IF_ANY>"],
+  "risk_level": "<low|medium|high>"
 }

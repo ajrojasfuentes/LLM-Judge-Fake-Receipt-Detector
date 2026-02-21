@@ -87,7 +87,7 @@ class JudgeResult:
             reasons=["Failed to parse judge response"],
             skill_results={
                 k: "uncertain"
-                for k in ["math_consistency", "typography", "visual_authenticity",
+                for k in ["math_consistency", "typography_analysis", "visual_authenticity",
                            "layout_structure", "contextual_validation"]
             },
             flags=[],
@@ -212,7 +212,10 @@ class BaseJudge(ABC):
             reasons += ["No reason provided"] * (2 - len(reasons))
 
         skill_results = data.get("skill_results", {})
-        for k in ["math_consistency", "typography", "visual_authenticity",
+        # Accept both "typography_analysis" (canonical) and "typography" (legacy alias)
+        if "typography" in skill_results and "typography_analysis" not in skill_results:
+            skill_results["typography_analysis"] = skill_results.pop("typography")
+        for k in ["math_consistency", "typography_analysis", "visual_authenticity",
                   "layout_structure", "contextual_validation"]:
             if skill_results.get(k) not in VALID_SKILL_RESULTS:
                 skill_results[k] = "uncertain"
