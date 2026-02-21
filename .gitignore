@@ -17,6 +17,9 @@ build/
 # Notebooks checkpoints
 .ipynb_checkpoints/
 
+# Outputs
+outputs/
+
 # IDE
 .vscode/
 .idea/
