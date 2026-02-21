@@ -13,17 +13,17 @@ Dataset → Sampler (20 receipts) → Image Loader
                                         │
               ┌─────────────────────────┼─────────────────────────┐
               ▼                         ▼                         ▼
-     Judge 1 (Qwen2.5-VL)     Judge 2 (Qwen2.5-VL)     Judge 3 (InternVL2.5)
+     Judge 1 (Qwen2.5-VL)     Judge 2 (Qwen2.5-VL)     Judge 3 (GLM-4.5V)
      "Forensic Accountant"    "Document Examiner"       "Holistic Auditor"
-     T=0.1, math/context      T=0.7, visual/typo        T=0.3, all skills
+     T=0.2, math/context      T=0.6, visual/typo        T=0.3, all skills
               │                         │                         │
               └─────────────────────────┼─────────────────────────┘
                                         ▼
                                   VotingEngine
-                               (majority + tiebreak)
+                            (dynamic uncertainty-weighted)
                                         │
                                   Final Verdict
-                             FAKE/REAL/UNCERTAIN (N/3)
+                             FAKE/REAL/UNCERTAIN
 ```
 
 Each judge receives the receipt image plus a **structured system prompt** that includes:
@@ -31,12 +31,12 @@ Each judge receives the receipt image plus a **structured system prompt** that i
 - 5 ordered "skills" (rubric checklist) to apply
 - A rigid JSON output schema to enforce structured responses
 
-The **VotingEngine** aggregates the three `JudgeResult` objects via majority vote (default) or confidence-weighted voting (optional extension).
+The **VotingEngine** aggregates the three `JudgeResult` objects via dynamic uncertainty-weighted voting (default), with majority and confidence-weighted as alternative strategies.
 
 **Key design decisions:**
 - No OCR required: models reason directly from the image, which avoids an extra dependency and lets the judge flag visual anomalies that OCR would miss.
 - Strict JSON output template + multi-attempt retry + validation pipeline eliminates most hallucination and free-text noise.
-- Two Qwen2.5-VL personas + one InternVL2.5 provide model diversity without requiring three separate API accounts.
+- Two Qwen2.5-VL personas + one GLM-4.5V provide model diversity without requiring three separate API accounts.
 
 ---
 
@@ -149,7 +149,7 @@ python main.py demo <receipt_id>
 ## AI Tools Used
 
 - **Claude (claude-sonnet-4-6 via Claude Code):** Used as the primary coding assistant to scaffold the project architecture, implement all modules, design the skill templates and prompt structure, and write tests.
-- **HuggingFace InferenceClient:** Runtime API for all three judge models (Qwen2.5-VL x2 + InternVL2.5).
+- **HuggingFace InferenceClient:** Runtime API for all three judge models (Qwen2.5-VL-72B-Instruct x2 + GLM-4.5V).
 
 ---
 
@@ -158,9 +158,10 @@ python main.py demo <receipt_id>
 ```
 ├── configs/          # Judge and sampling configuration (YAML)
 ├── data/             # Raw dataset + selected samples
+├── forensic/         # Modular forensic analysis tools (MELA, CPI, DCT, noise)
 ├── judges/           # LLM judge implementations + voting engine
 ├── skills/           # Rubric system: 5 forensic skill templates
-├── pipeline/         # Dataset loading, sampling, evaluation
+├── pipeline/         # Dataset loading, sampling, evaluation, forensic orchestration
 ├── notebooks/        # EDA + evaluation analysis notebooks
 ├── outputs/          # samples.json + per-receipt result JSONs
 ├── tests/            # Unit tests for judges, voting, pipeline

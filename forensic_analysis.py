@@ -621,7 +621,7 @@ class ForensicAnalyzer:
         5. Generate visualization and match density heatmap.
 
         This is particularly relevant for CPI (copy-paste inside) forgeries,
-        which represent ~56% of all modifications in this dataset.
+        which represent ~77.6% of all modifications in this dataset.
 
         Parameters
         ----------

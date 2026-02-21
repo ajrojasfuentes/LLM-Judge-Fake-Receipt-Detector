@@ -3,7 +3,7 @@ judges:
     name: "Forensic Accountant"
     model: "Qwen/Qwen2.5-VL-72B-Instruct"
     provider: "huggingface"
-    temperature: 0.1
+    temperature: 0.2
     max_tokens: 1024
     persona: |
       You are a Forensic Accountant specialized in detecting financial document fraud.
@@ -16,7 +16,7 @@ judges:
     name: "Document Examiner"
     model: "Qwen/Qwen2.5-VL-72B-Instruct"
     provider: "huggingface"
-    temperature: 0.7
+    temperature: 0.6
     max_tokens: 1024
     persona: |
       You are a Forensic Document Examiner specialized in detecting visual forgeries.
