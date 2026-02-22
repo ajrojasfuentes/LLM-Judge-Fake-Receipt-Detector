@@ -1,3 +1,3 @@
-from .rubric import Rubric
+from .rubric import Rubric, SkillSpec, RubricError
 
-__all__ = ["Rubric"]
+__all__ = ["Rubric", "SkillSpec", "RubricError"]
