@@ -1,6 +1,5 @@
 """
-forensics_analysis.pipeline — Orchestration layer for the modular
-forensic analysis toolkit.
+forensics.pipeline — Orchestration layer for the modular forensic toolkit.
 
 This module is the main entry-point for running all forensic analyses
 on a single receipt image.  It coordinates the following steps:
@@ -25,22 +24,23 @@ evidence pack.
 
 Usage
 -----
-    from forensics_analysis.pipeline import build_evidence_pack
+    from forensics.pipeline import build_evidence_pack
 
     pack = build_evidence_pack(
         image_path="receipt.png",
-        output_dir="outputs/forensic/receipt",
+        output_dir="forensics/evidence/receipt_001",
         ocr_txt="receipt.txt",
     )
 
 CLI
 ---
-    python -m forensics_analysis.pipeline --image receipt.png --out out/
+    python -m forensics.pipeline --image receipt.png
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
 from pathlib import Path
@@ -59,6 +59,45 @@ from .utils import ROI, ensure_dir, load_image_rgb, save_json
 
 logger = logging.getLogger(__name__)
 
+_FORENSICS_DIR = Path(__file__).resolve().parent
+_DEFAULT_EVIDENCE_ROOT = _FORENSICS_DIR / "evidence"
+_LEGACY_TEMPLATE_PATH = _FORENSICS_DIR / "evidence_pack_template.json"
+_V2_TEMPLATE_PATH = _FORENSICS_DIR / "evidence_template_v2.json"
+
+
+def _resolve_evidence_dir(image_path: Path, output_dir: Optional[Union[str, Path]]) -> Path:
+    """Resolve evidence directory as `forensics/evidence/<image_id>/` by default."""
+    image_id = image_path.stem
+    if output_dir is None:
+        return ensure_dir(_DEFAULT_EVIDENCE_ROOT / image_id)
+    return ensure_dir(output_dir)
+
+
+def _resolve_ocr_txt_path(image_path: Path, ocr_txt: Optional[Union[str, Path]]) -> Optional[Path]:
+    """Prefer explicit OCR txt path; otherwise try `<image>.txt` beside image."""
+    if ocr_txt is not None:
+        p = Path(ocr_txt)
+        return p if p.exists() else None
+
+    inferred = image_path.with_suffix(".txt")
+    if inferred.exists():
+        return inferred
+    return None
+
+
+def _load_template_version() -> str:
+    """Return evidence template version available in repo (v2 preferred)."""
+    for candidate in (_V2_TEMPLATE_PATH, _LEGACY_TEMPLATE_PATH):
+        if not candidate.exists():
+            continue
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                data = json.load(f)
+            return str(data.get("template_version", candidate.stem))
+        except Exception:
+            return candidate.stem
+    return "custom"
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -66,7 +105,7 @@ logger = logging.getLogger(__name__)
 
 def build_evidence_pack(
     image_path: Union[str, Path],
-    output_dir: Union[str, Path],
+    output_dir: Optional[Union[str, Path]] = None,
     ocr_txt: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Run every forensic module and assemble the evidence pack.
@@ -75,9 +114,9 @@ def build_evidence_pack(
     ----------
     image_path : str or Path
         Path to the receipt image (PNG, JPEG, etc.).
-    output_dir : str or Path
-        Directory where output artifacts (heatmaps, overlays, crops,
-        and the final ``evidence_pack.json``) will be saved.
+    output_dir : str or Path, optional
+        Directory where output artifacts and ``evidence_pack.json`` are saved.
+        Default: ``forensics/evidence/<image_id>/``.
     ocr_txt : str or Path, optional
         Path to a pre-existing plain-text OCR transcription.  When
         provided, PaddleOCR is skipped and lines are read from this
@@ -110,7 +149,8 @@ def build_evidence_pack(
     """
     t0 = time.time()
     image_path = Path(image_path)
-    outp = ensure_dir(output_dir)
+    outp = _resolve_evidence_dir(image_path, output_dir)
+    ocr_txt_path = _resolve_ocr_txt_path(image_path, ocr_txt)
 
     errors: Dict[str, str] = {}
 
@@ -162,21 +202,21 @@ def build_evidence_pack(
     # ------------------------------------------------------------------
     mela: Dict[str, Any] = {"summary": {}, "rois": [], "artifacts": {}}
     try:
-        mela = mela_analyze(rgb, out_dir=str(outp / "mela"))
+        mela = mela_analyze(rgb, out_dir=str(outp))
     except Exception as exc:
         errors["mela"] = f"{type(exc).__name__}: {exc}"
         logger.warning("MELA analysis failed: %s", exc)
 
     noise: Dict[str, Any] = {"summary": {}, "artifacts": {}}
     try:
-        noise = noise_inconsistency(rgb, out_dir=str(outp / "noise"))
+        noise = noise_inconsistency(rgb, out_dir=str(outp))
     except Exception as exc:
         errors["noise"] = f"{type(exc).__name__}: {exc}"
         logger.warning("Noise analysis failed: %s", exc)
 
     cm: Dict[str, Any] = {"summary": {}, "pairs": [], "artifacts": {}}
     try:
-        cm = copy_move_detect(rgb, out_dir=str(outp / "copymove"))
+        cm = copy_move_detect(rgb, out_dir=str(outp))
     except Exception as exc:
         errors["copy_move"] = f"{type(exc).__name__}: {exc}"
         logger.warning("Copy-move detection failed: %s", exc)
@@ -186,7 +226,7 @@ def build_evidence_pack(
     # ------------------------------------------------------------------
     ocr: Dict[str, Any] = {"engine": "none", "lines": [], "boxes": None}
     try:
-        ocr = run_ocr(rgb, txt_path=ocr_txt)
+        ocr = run_ocr(rgb, txt_path=ocr_txt_path)
     except Exception as exc:
         errors["ocr"] = f"{type(exc).__name__}: {exc}"
         logger.warning("OCR failed: %s", exc)
@@ -222,6 +262,7 @@ def build_evidence_pack(
         "image_id": image_path.name,
         "input_path": str(image_path),
         "output_dir": str(outp),
+        "template_version": _load_template_version(),
         "global": {
             **meta,
             **q,
@@ -238,6 +279,7 @@ def build_evidence_pack(
         "copy_move_pairs": cm.get("pairs", []),
         "ocr": {
             "engine": ocr.get("engine"),
+            "source_txt": str(ocr_txt_path) if ocr_txt_path else None,
             "num_lines": len(ocr_lines),
             "sample_lines": ocr_lines[:25],
             "has_boxes": bool(ocr.get("boxes")),
@@ -268,8 +310,11 @@ def main() -> None:
         help="Path to the receipt image (PNG/JPG).",
     )
     ap.add_argument(
-        "--out", required=True,
-        help="Output directory for artifacts and JSON.",
+        "--out", default=None,
+        help=(
+            "Output directory for artifacts and JSON. "
+            "Default: forensics/evidence/<image_id>/"
+        ),
     )
     ap.add_argument(
         "--ocr_txt", default=None,

@@ -1,0 +1,189 @@
+{
+  "_description": "Template for the forensics_analysis pipeline output (evidence pack). All fields shown here are produced by build_evidence_pack(). Values are annotated with their expected types and semantics.",
+  "_version": "1.0.0",
+  "image_id": "<string: filename of the input image, e.g. 'receipt_001.png'>",
+  "input_path": "<string: absolute path to the source image>",
+  "output_dir": "<string: absolute path to the output directory>",
+  "global": {
+    "_description": "Merged global metrics from metadata, quality, entropy/edge, and skew modules.",
+    "path": "<string: same as input_path>",
+    "filename": "<string: image filename>",
+    "bytes": "<int|null: file size in bytes>",
+    "error": "<string|null: metadata extraction error, if any>",
+    "format": "<string|null: image codec, e.g. 'PNG', 'JPEG'>",
+    "mode": "<string|null: PIL colour mode, e.g. 'RGB', 'RGBA'>",
+    "width": "<int: image width in pixels>",
+    "height": "<int: image height in pixels>",
+    "horizontal_resolution": "<float|null: horizontal DPI>",
+    "vertical_resolution": "<float|null: vertical DPI>",
+    "has_alpha": "<bool: true if the image has an alpha channel>",
+    "bit_depth": "<int|null: estimated bit depth from colour mode>",
+    "exif_orientation": "<int|null: EXIF orientation tag (274)>",
+    "aspect_ratio": "<float|null: width / height>",
+    "brightness_mean": "<float: mean grayscale intensity (0-255)>",
+    "brightness_std": "<float: std of grayscale intensity>",
+    "contrast_std": "<float: contrast proxy (same as brightness_std)>",
+    "blur_laplacian_var": "<float|null: variance of Laplacian — higher means sharper>",
+    "blur_tiles": {
+      "_description": "Per-tile Laplacian blur variance statistics.",
+      "blur_tile_mean": "<float|null: mean Laplacian variance across tiles>",
+      "blur_tile_std": "<float|null: std deviation across tiles>",
+      "blur_tile_min": "<float|null: minimum tile blur>",
+      "blur_tile_max": "<float|null: maximum tile blur>",
+      "tile": "<int: tile side length in pixels>",
+      "tiles_hw": [
+        "<int: number of tile rows>",
+        "<int: number of tile columns>"
+      ]
+    },
+    "entropy": "<float: Shannon entropy of grayscale histogram (0-8 bits)>",
+    "edge_density": "<float|null: fraction of Canny edge pixels>",
+    "edge_method": "<string: 'canny' or 'none'>",
+    "edge_threshold": [
+      "<int: low threshold>",
+      "<int: high threshold>"
+    ],
+    "text_ink_ratio": "<float|null: fraction of ink pixels via adaptive threshold>",
+    "method": "<string: 'hough' or 'none'>",
+    "params": {
+      "block": "<int: adaptive threshold block size>",
+      "C": "<int: adaptive threshold constant>"
+    },
+    "skew_angle_deg": "<float|null: estimated skew angle in degrees (positive=clockwise)>",
+    "skew_confidence": "<float|null: confidence score 0-1 (inverse MAD)>"
+  },
+  "forensic": {
+    "_description": "Summary results from each forensic analysis module.",
+    "mela": {
+      "_description": "Multi-Quality Error Level Analysis summary.",
+      "used_qualities": [
+        "<int: JPEG quality levels tested, e.g. 95, 90, 85>"
+      ],
+      "block_sizes": [
+        "<int: local-variance kernel sizes, e.g. 8, 16, 32>"
+      ],
+      "thr_percentile": "<float: percentile used for thresholding (e.g. 99.3)>",
+      "threshold_value": "<float: computed threshold value>",
+      "suspicious_ratio": "<float: fraction of pixels above threshold (0-1)>",
+      "peak_score": "<float: maximum value in the fused variance map>",
+      "percentiles": {
+        "p50": "<float>",
+        "p75": "<float>",
+        "p90": "<float>",
+        "p95": "<float>",
+        "p97": "<float>",
+        "p99": "<float>"
+      }
+    },
+    "noise": {
+      "_description": "Residual-noise tile inconsistency summary.",
+      "tile": "<int: tile side length in pixels>",
+      "sigma": "<float: Gaussian blur sigma>",
+      "max_tile_z": "<float: maximum Z-score across tiles>",
+      "mean_abs_resid": "<float: global mean absolute residual>",
+      "std_tile_mean_abs_resid": "<float: std of per-tile mean abs residual>"
+    },
+    "copy_move": {
+      "_description": "ORB-based copy-move detection summary.",
+      "pairs_found": "<int: number of detected source/destination pairs>",
+      "good_matches": "<int: total ORB matches passing the ratio test>",
+      "keypoints": "<int: total ORB keypoints detected>",
+      "reason": "<string|absent: explanation when pairs_found is 0>"
+    }
+  },
+  "suspect_rois": [
+    {
+      "_description": "Region of interest flagged by MELA (ROI dataclass serialised to dict).",
+      "roi_id": "<string: unique ID, e.g. 'r1'>",
+      "bbox": [
+        "<int: x>",
+        "<int: y>",
+        "<int: width>",
+        "<int: height>"
+      ],
+      "score": "<float: mean anomaly score in 0-1>",
+      "signals": [
+        "<string: signal name, e.g. 'mela_hotspot'>"
+      ],
+      "entity_hint": "<string|null: semantic hint>",
+      "ocr_snippet": "<string|null: OCR text from this region>",
+      "crop_path": "<string|null: path to the saved ROI crop image>"
+    }
+  ],
+  "copy_move_pairs": [
+    {
+      "_description": "A detected copy-move source/destination pair.",
+      "translation_bin": [
+        "<int: binned dx>",
+        "<int: binned dy>"
+      ],
+      "matches_in_cluster": "<int: number of keypoint matches in this cluster>",
+      "src_bbox": [
+        "<int: x>",
+        "<int: y>",
+        "<int: w>",
+        "<int: h>"
+      ],
+      "dst_bbox": [
+        "<int: x>",
+        "<int: y>",
+        "<int: w>",
+        "<int: h>"
+      ]
+    }
+  ],
+  "ocr": {
+    "_description": "OCR extraction summary.",
+    "engine": "<string: 'paddleocr', 'txt', or 'none'>",
+    "num_lines": "<int: total number of recognised text lines>",
+    "sample_lines": [
+      "<string: first 25 OCR lines for inspection>"
+    ],
+    "has_boxes": "<bool: true if bounding box data is available>"
+  },
+  "semantic_checks": [
+    {
+      "_description": "Result of an accounting cross-check.",
+      "name": "<string: check identifier, e.g. 'subtotal+tax==total'>",
+      "passed": "<bool|null: true=pass, false=fail, null=insufficient data>",
+      "details": "<string: human-readable explanation>",
+      "evidence": {
+        "subtotal_line": "<string|null: raw OCR line matched as subtotal>",
+        "tax_line": "<string|null: raw OCR line matched as tax>",
+        "total_line": "<string|null: raw OCR line matched as total>"
+      }
+    }
+  ],
+  "artifacts": {
+    "_description": "Paths to all saved image artifacts.",
+    "input_image": "<string: path to the original input image>",
+    "mela": {
+      "mela_heat": "<string: path to grayscale MELA heatmap PNG>",
+      "mela_overlay": "<string: path to red-overlay PNG>",
+      "mela_rois": "<string: path to image with green ROI bboxes>",
+      "mela_roi_crops": [
+        "<string: path to individual ROI crop PNGs>"
+      ]
+    },
+    "noise": {
+      "noise_heat": "<string: path to noise heatmap PNG>",
+      "noise_overlay": "<string: path to noise overlay PNG>"
+    },
+    "copymove": {
+      "copymove_rois": "<string: path to image with copy-move bboxes>",
+      "copymove_pair_grids": [
+        "<string: path to side-by-side pair crop PNGs>"
+      ]
+    }
+  },
+  "errors": {
+    "_description": "Module-level errors. Empty dict when all modules succeed.",
+    "<module_name>": "<string: error type and message>"
+  },
+  "timing_ms": {
+    "total": "<int: total pipeline execution time in milliseconds>"
+  },
+  "evidence_json": "<string: path to this evidence pack JSON file>",
+  "template_version": "evidence_pack_v2",
+  "template_notes": "Updated template aligned with forensics/pipeline.py defaults: pseudo-OCR from dataset TXT when available and evidence output under forensics/evidence/<image_id>/."
+}
