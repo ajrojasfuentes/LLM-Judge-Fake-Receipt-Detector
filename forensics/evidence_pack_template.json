@@ -1,5 +1,5 @@
 {
-  "_description": "Evidence pack template index (current generation).",
+  "_description": "Evidence pack template index.",
   "_version": "3.0.0",
   "templates": {
     "GRAPHIC": "forensics/evidence_pack_template_graphic.json",

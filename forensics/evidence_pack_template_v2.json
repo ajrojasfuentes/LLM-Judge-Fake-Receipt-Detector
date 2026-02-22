@@ -1,9 +1,0 @@
-{
-  "_description": "Deprecated alias to the split evidence-pack templates. Use evidence_pack_template.json index.",
-  "_version": "3.0.0",
-  "templates": {
-    "GRAPHIC": "forensics/evidence_pack_template_graphic.json",
-    "READING": "forensics/evidence_pack_template_reading.json",
-    "FULL": "forensics/evidence_pack_template_full.json"
-  }
-}
