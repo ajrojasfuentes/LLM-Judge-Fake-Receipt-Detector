@@ -1,5 +1,5 @@
 """
-forensics_analysis.utils — Shared utilities for the forensic analysis
+forensics.utils — Shared utilities for the forensic analysis
 pipeline.
 
 Provides:

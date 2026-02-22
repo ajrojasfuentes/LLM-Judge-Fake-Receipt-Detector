@@ -1,5 +1,5 @@
 """
-forensics_analysis.copy_move — Copy-Move forgery detection via ORB
+forensics.copy_move — Copy-Move forgery detection via ORB
 keypoint matching and translation-vector clustering.
 
 Copy-move forgery duplicates a region of the image and pastes it
@@ -160,14 +160,24 @@ def copy_move_detect(
     # ------------------------------------------------------------------
     # Step 2: Self-matching with Lowe's ratio test
     # ------------------------------------------------------------------
+    # We match the descriptor set against *itself* to find duplicate
+    # regions.  With k=2 the best match for every descriptor is always
+    # itself (distance=0), so after filtering it out only one neighbor
+    # remains and the ratio test cannot be applied — yielding zero good
+    # matches every time.  Using k=3 gives us the self-match plus two
+    # genuine neighbors; we discard the self-match and apply Lowe's
+    # ratio test on the remaining pair.
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    knn = bf.knnMatch(des, des, k=2)
+    knn = bf.knnMatch(des, des, k=3)
 
     good: List[cv2.DMatch] = []
-    for m, n in knn:
-        # Skip self-matches (same keypoint index)
-        if m.queryIdx == m.trainIdx:
+    for matches in knn:
+        # Remove the self-match (queryIdx == trainIdx) and keep the
+        # two best remaining neighbors for the ratio test.
+        others = [m for m in matches if m.queryIdx != m.trainIdx]
+        if len(others) < 2:
             continue
+        m, n = others[0], others[1]
         if m.distance < 0.75 * n.distance:
             good.append(m)
 

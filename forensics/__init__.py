@@ -1,5 +1,5 @@
 """
-forensics_analysis — Modular forensic image analysis toolkit for receipt
+forensics — Modular forensic image analysis toolkit for receipt
 forgery detection.
 
 This package provides a pipeline of independent forensic analysis modules
@@ -39,11 +39,32 @@ Usage
     )
 """
 
-from .pipeline import build_evidence_pack
-from .utils import ROI
-
 __all__ = [
     "build_evidence_pack",
     "pipeline",
     "ROI",
 ]
+
+from .pipeline import build_evidence_pack
+from .utils import ROI
+
+def __getattr__(name: str):
+    """Lazy imports to avoid circular/premature loading.
+
+    This prevents the RuntimeWarning that occurs when running
+    ``python -m forensics_analysis.pipeline`` — Python imports the
+    package first (triggering ``__init__.py``), and an eager import
+    of ``pipeline`` would place it in ``sys.modules`` before the
+    ``-m`` runner can execute it as ``__main__``.
+
+    Supported lazy names:
+        build_evidence_pack — from .pipeline
+        ROI                 — from .utils
+    """
+    if name == "build_evidence_pack":
+        from .pipeline import build_evidence_pack
+        return build_evidence_pack
+    if name == "ROI":
+        from .utils import ROI
+        return ROI
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

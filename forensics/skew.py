@@ -1,5 +1,5 @@
 """
-forensics_analysis.skew — Document skew estimation via Hough line
+forensics.skew — Document skew estimation via Hough line
 detection.
 
 Skew (rotation) of a document can indicate a scan or photograph rather

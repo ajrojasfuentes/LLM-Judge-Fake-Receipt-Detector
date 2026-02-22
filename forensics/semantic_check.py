@@ -1,4 +1,4 @@
-# semantic_check.py
+# forensics.semantic_check.py
 """
 Semantic checks (accounting validation) built on top of ocr_postprocess.py.
 

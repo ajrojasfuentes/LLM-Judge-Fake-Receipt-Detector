@@ -1,5 +1,5 @@
 """
-forensics_analysis.pipeline — Orchestration layer for the modular
+forensics.pipeline — Orchestration layer for the modular
 forensic analysis toolkit.
 
 This module is the main entry-point for running all forensic analyses

@@ -1,5 +1,5 @@
 """
-forensics_analysis.entropy_edges — Image complexity and texture metrics.
+forensics.entropy_edges — Image complexity and texture metrics.
 
 Provides three complementary descriptors of image content density:
 

@@ -1,5 +1,5 @@
 """
-forensics_analysis.mela — Multi-Quality Error Level Analysis (MELA).
+forensics.mela — Multi-Quality Error Level Analysis (MELA).
 
 MELA extends classical ELA by compressing the image at multiple JPEG
 quality levels, computing the pixel-wise reconstruction error at each

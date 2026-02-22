@@ -1,5 +1,5 @@
 """
-forensics_analysis.quality — Global and per-tile image quality metrics.
+forensics.quality — Global and per-tile image quality metrics.
 
 Provides two functions:
 

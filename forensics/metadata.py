@@ -1,5 +1,5 @@
 """
-forensics_analysis.metadata — Image metadata extraction.
+forensics.metadata — Image metadata extraction.
 
 Extracts structural metadata from the image file header using Pillow
 (PIL).  The returned dictionary includes:

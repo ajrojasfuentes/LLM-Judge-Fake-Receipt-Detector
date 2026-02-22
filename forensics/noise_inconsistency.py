@@ -1,5 +1,5 @@
 """
-forensics_analysis.noise_inconsistency — Residual-noise-based per-tile
+forensics.noise_inconsistency — Residual-noise-based per-tile
 inconsistency analysis.
 
 Forged images often contain regions with different noise characteristics
@@ -112,8 +112,19 @@ def noise_inconsistency(
     # ------------------------------------------------------------------
     # Step 3: Up-scale Z-scores and build heatmap
     # ------------------------------------------------------------------
+    # np.kron produces a map of size (nh*tile, nw*tile) which is smaller
+    # than the original image when H or W is not an exact multiple of
+    # tile (tile_view crops to the largest multiple).  We must pad the
+    # result back to the original spatial dimensions so it can be
+    # blended with the full-size RGB image in overlay_heatmap().
+    H_orig, W_orig = gray.shape[:2]
     heat = np.kron(z, np.ones((tile, tile), dtype=np.float32))
-    heat = heat[: gray.shape[0], : gray.shape[1]]
+    if heat.shape[0] < H_orig or heat.shape[1] < W_orig:
+        padded = np.zeros((H_orig, W_orig), dtype=np.float32)
+        padded[: heat.shape[0], : heat.shape[1]] = heat
+        heat = padded
+    else:
+        heat = heat[:H_orig, :W_orig]
     # Keep only the positive (above-average) side for visualisation
     heat01 = normalize_01(np.maximum(0.0, heat))
 
