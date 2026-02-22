@@ -1,12 +1,4 @@
-"""
-GLMJudge: Judge implementation using GLM-4.1V-9B-Thinking via Hugging Face Inference Providers (router).
-Acts as the third independent "Holistic Auditor" judge.
-
-Requires:
-- HF_TOKEN env var with permissions to call Inference Providers.
-Optionally:
-- Set routing to "novita" (provider) or "fastest"/"cheapest"/"preferred" (policies).
-"""
+"""GLM judge implementation with optional multi-image VLM input."""
 
 from __future__ import annotations
 
@@ -20,11 +12,6 @@ from .base_judge import BaseJudge
 
 
 class GLMJudge(BaseJudge):
-    """
-    Judge backed by zai-org/GLM-4.5V via Hugging Face Inference Providers.
-    Serves as the Holistic Auditor — applies all skills for a cross-validated verdict.
-    """
-
     MODEL_ID = "zai-org/GLM-4.5V"
 
     def __init__(
@@ -40,12 +27,14 @@ class GLMJudge(BaseJudge):
         max_tokens: int = 1024,
         focus_skills: list[str] | None = None,
         timeout_s: float = 120.0,
+        forensic_mode: str = "FULL",
     ):
         super().__init__(
             judge_id=judge_id,
             judge_name=judge_name,
             persona_description=persona_description,
-            focus_skills=focus_skills,  # None → all skills with equal weight
+            focus_skills=focus_skills,
+            forensic_mode=forensic_mode,
         )
 
         hf_token = os.getenv("HF_TOKEN")
@@ -54,39 +43,26 @@ class GLMJudge(BaseJudge):
 
         self.temperature = temperature
         self.max_tokens = max_tokens
-
-        # routing can be a provider name (e.g., "novita") or a policy ("fastest", "cheapest", "preferred")
-        # We'll form the routed model id accordingly: "<model>:<routing>"
         self._routed_model = self.MODEL_ID
+        self._client = InferenceClient(api_key=hf_token, timeout=timeout_s)
 
-        self._client = InferenceClient(
-            api_key=hf_token,
-            timeout=timeout_s,
-        )
-
-    def _call_api(self, prompt: str, image_path: Path) -> str:
-        """
-        Call GLM-4.5V with the receipt image and the judge prompt via chat completions (VLM).
-        Accepts a local image by sending it as a data URL (base64).
-        """
-        image_b64 = self._encode_image(image_path)
-        mime = self._get_mime(image_path)
+    def _call_api(self, prompt: str, image_paths: list[Path]) -> str:
+        content = [{"type": "text", "text": prompt}]
+        for image_path in image_paths:
+            image_b64 = self._encode_image(image_path)
+            mime = self._get_mime(image_path)
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+                }
+            )
 
         messages = [
             {"role": "system", "content": self.persona_description},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{image_b64}"},
-                    },
-                ],
-            },
+            {"role": "user", "content": content},
         ]
 
-        # Preferred API (matches Hugging Face Inference Providers docs and your example)
         try:
             completion = self._client.chat.completions.create(
                 model=self._routed_model,
@@ -94,22 +70,16 @@ class GLMJudge(BaseJudge):
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            content = completion.choices[0].message.content
-            return content if isinstance(content, str) else str(content)
         except AttributeError:
-            # Backward-compat fallback for older huggingface_hub versions
             completion = self._client.chat_completion(
                 model=self._routed_model,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            content = completion.choices[0].message.content
-            return content if isinstance(content, str) else str(content)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        content = completion.choices[0].message.content
+        return content if isinstance(content, str) else str(content)
 
     @staticmethod
     def _encode_image(image_path: Path) -> str:
@@ -118,7 +88,6 @@ class GLMJudge(BaseJudge):
 
     @staticmethod
     def _get_mime(image_path: Path) -> str:
-        ext = image_path.suffix.lower()
         return {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -126,4 +95,4 @@ class GLMJudge(BaseJudge):
             ".tif": "image/tiff",
             ".tiff": "image/tiff",
             ".webp": "image/webp",
-        }.get(ext, "image/jpeg")
+        }.get(image_path.suffix.lower(), "image/jpeg")

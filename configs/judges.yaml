@@ -1,48 +1,55 @@
 judges:
-  - id: judge_1
-    name: "Forensic Accountant"
-    model: "Qwen/Qwen2.5-VL-72B-Instruct"
-    provider: "huggingface"
-    temperature: 0.2
-    max_tokens: 1024
-    persona: |
-      You are a Forensic Accountant specialized in detecting financial document fraud.
-      Your primary focus is mathematical consistency and numerical anomalies.
-    focus_skills:
-      - math_consistency
-      - contextual_validation
+- id: judge_1
+  name: Forensic Accountant
+  model: Qwen/Qwen2.5-VL-72B-Instruct
+  provider: huggingface
+  temperature: 0.2
+  max_tokens: 1024
+  persona: 'You are a Forensic Accountant specialized in detecting financial document
+    fraud.
 
-  - id: judge_2
-    name: "Document Examiner"
-    model: "Qwen/Qwen2.5-VL-72B-Instruct"
-    provider: "huggingface"
-    temperature: 0.6
-    max_tokens: 1024
-    persona: |
-      You are a Forensic Document Examiner specialized in detecting visual forgeries.
-      Your primary focus is typographic anomalies, visual artifacts, and layout inconsistencies.
-    focus_skills:
-      - typography_analysis
-      - visual_authenticity
-      - layout_structure
+    Your primary focus is mathematical consistency and numerical anomalies.
 
-  - id: judge_3
-    name: "Holistic Auditor"
-    model: "zai-org/GLM-4.5V"
-    provider: "huggingface"
-    temperature: 0.3
-    max_tokens: 1024
-    persona: |
-      You are a Holistic Document Auditor with broad expertise in receipt authentication.
-      You apply all available skills and provide a cross-validated independent assessment.
-    focus_skills:
-      - math_consistency
-      - typography_analysis
-      - visual_authenticity
-      - layout_structure
-      - contextual_validation
+    '
+  focus_skills:
+  - math_consistency
+  - contextual_validation
+  forensic_mode: READING
+- id: judge_2
+  name: Document Examiner
+  model: Qwen/Qwen2.5-VL-72B-Instruct
+  provider: huggingface
+  temperature: 0.6
+  max_tokens: 1024
+  persona: 'You are a Forensic Document Examiner specialized in detecting visual forgeries.
 
+    Your primary focus is typographic anomalies, visual artifacts, and layout inconsistencies.
+
+    '
+  focus_skills:
+  - typography_analysis
+  - visual_authenticity
+  - layout_structure
+  forensic_mode: GRAPHIC
+- id: judge_3
+  name: Holistic Auditor
+  model: zai-org/GLM-4.5V
+  provider: huggingface
+  temperature: 0.3
+  max_tokens: 1024
+  persona: 'You are a Holistic Document Auditor with broad expertise in receipt authentication.
+
+    You apply all available skills and provide a cross-validated independent assessment.
+
+    '
+  focus_skills:
+  - math_consistency
+  - typography_analysis
+  - visual_authenticity
+  - layout_structure
+  - contextual_validation
+  forensic_mode: FULL
 voting:
-  strategy: "majority"  # dynamic_weighted | majority | confidence_weighted
-  uncertain_threshold: 2        # if >= N raw UNCERTAIN votes -> force UNCERTAIN
-  tiebreak: "confidence_avg"    # used only for confidence_weighted strategy
+  strategy: majority_simple
+  uncertain_threshold: 2
+  tiebreak: confidence_avg
