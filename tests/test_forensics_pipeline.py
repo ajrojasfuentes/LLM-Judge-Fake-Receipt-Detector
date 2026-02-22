@@ -41,3 +41,19 @@ def test_build_evidence_pack_reading_mode_shape(tmp_path):
     assert "reading" in pack
     assert "global" not in pack
     assert "forensic" not in pack
+
+
+def test_forensic_pipeline_context_evidence_pack_is_json_serializable(tmp_path):
+    from pipeline.forensic_pipeline import ForensicPipeline
+    import json
+
+    img = tmp_path / "receipt3.png"
+    txt = tmp_path / "receipt3.txt"
+    _make_img(img)
+    txt.write_text("TOTAL 12.00\n", encoding="utf-8")
+
+    fp_ctx = ForensicPipeline(output_dir=tmp_path / "evidence")
+    ctx = fp_ctx.analyze(img, ocr_txt_path=txt, mode="FULL")
+
+    # Regression: prompt builder json.dumps() must not fail on ROI dataclasses
+    json.dumps(ctx.evidence_pack, ensure_ascii=False)

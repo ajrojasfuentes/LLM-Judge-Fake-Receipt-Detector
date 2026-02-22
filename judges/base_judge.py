@@ -1,7 +1,4 @@
-"""
-BaseJudge: Abstract base class for all LLM judge implementations.
-Defines the contract every judge must fulfil.
-"""
+"""BaseJudge: Abstract base class for all LLM judge implementations."""
 
 from __future__ import annotations
 
@@ -10,15 +7,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from pipeline.forensic_pipeline import ForensicContext
-
-
-# ---------------------------------------------------------------------------
-# Data model for a single judge's output
-# ---------------------------------------------------------------------------
+from typing import Any
 
 VALID_LABELS = {"REAL", "FAKE", "UNCERTAIN"}
 VALID_SKILL_RESULTS = {"pass", "fail", "uncertain"}
@@ -32,24 +21,26 @@ APPROVED_FLAGS = {
     "ERASED_CONTENT", "RESOLUTION_MISMATCH", "SUSPICIOUS_ROUND_TOTAL",
 }
 
+CANONICAL_SKILLS = [
+    "math_consistency",
+    "typography_analysis",
+    "visual_authenticity",
+    "layout_structure",
+    "contextual_validation",
+]
+
 
 @dataclass
 class JudgeResult:
-    """Structured output from a single LLM judge."""
-
     judge_id: str
     judge_name: str
     receipt_id: str
-
-    # Required fields (from output schema)
-    label: str                              # "REAL" | "FAKE" | "UNCERTAIN"
-    confidence: float                       # [0.0 – 100.0]
-    reasons: list[str]                      # 2–4 short observations
-    skill_results: dict[str, str]           # per-skill pass/fail/uncertain
-    flags: list[str]                        # approved flag codes
-    risk_level: str                         # "low" | "medium" | "high"
-
-    # Meta
+    label: str
+    confidence: float
+    reasons: list[str]
+    skill_results: dict[str, str]
+    flags: list[str]
+    risk_level: str
     raw_response: str = field(default="", repr=False)
     parse_error: str | None = None
 
@@ -77,84 +68,66 @@ class JudgeResult:
 
     @classmethod
     def error_result(cls, judge_id: str, judge_name: str, receipt_id: str, error: str) -> "JudgeResult":
-        """Return a fallback UNCERTAIN result when parsing fails completely."""
         return cls(
             judge_id=judge_id,
             judge_name=judge_name,
             receipt_id=receipt_id,
             label="UNCERTAIN",
             confidence=0.0,
-            reasons=["Failed to parse judge response"],
-            skill_results={
-                k: "uncertain"
-                for k in ["math_consistency", "typography_analysis", "visual_authenticity",
-                           "layout_structure", "contextual_validation"]
-            },
+            reasons=["Failed to parse judge response", "Judge returned invalid schema"],
+            skill_results={k: "uncertain" for k in CANONICAL_SKILLS},
             flags=[],
             risk_level="low",
             parse_error=error,
         )
 
 
-# ---------------------------------------------------------------------------
-# Abstract base class
-# ---------------------------------------------------------------------------
-
 class BaseJudge(ABC):
-    """
-    Abstract base judge. Subclasses implement `_call_api` to hit the specific
-    model endpoint. The base class handles prompt building, JSON parsing,
-    validation, and retry logic.
-    """
+    """Abstract judge with prompt building, parsing, validation and retry logic."""
 
     MAX_RETRIES = 3
 
-    def __init__(self, judge_id: str, judge_name: str, persona_description: str,
-                 focus_skills: list[str] | None = None):
+    def __init__(
+        self,
+        judge_id: str,
+        judge_name: str,
+        persona_description: str,
+        focus_skills: list[str] | None = None,
+        forensic_mode: str = "FULL",
+    ):
         from skills import Rubric
+
         self.judge_id = judge_id
         self.judge_name = judge_name
         self.persona_description = persona_description
         self.focus_skills = focus_skills
+        self.forensic_mode = forensic_mode.upper()
         self._rubric = Rubric()
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def judge(
         self,
+        *,
         receipt_id: str,
         image_path: Path,
-        forensic_context: Optional["ForensicContext"] = None,
+        evidence_pack: dict[str, Any] | str | None = None,
+        supporting_image_paths: list[Path] | None = None,
     ) -> JudgeResult:
-        """
-        Main entry point. Builds the prompt, calls the API, parses the response.
-        Retries up to MAX_RETRIES times on invalid JSON.
-
-        Args:
-            receipt_id: Unique identifier for the receipt (used in the prompt).
-            image_path: Path to the receipt PNG image.
-            forensic_context: Optional ForensicContext from ForensicPipeline.
-                              When provided, pre-computed forensic signals are
-                              prepended to the prompt to focus the VLM's attention.
-        """
         prompt = self._rubric.build_prompt(
             receipt_id=receipt_id,
             persona_name=self.judge_name,
             persona_description=self.persona_description,
-            focus_skills=self.focus_skills,
+            evidence_pack=evidence_pack or "",
+            skill_ids=self.focus_skills,
         )
 
-        # Prepend forensic pre-analysis to the prompt when available
-        if forensic_context is not None:
-            forensic_section = forensic_context.to_prompt_section()
-            prompt = forensic_section + "\n\n" + prompt
+        image_paths = [Path(image_path)]
+        if supporting_image_paths:
+            image_paths.extend(Path(p) for p in supporting_image_paths)
 
         last_error = ""
-        for attempt in range(1, self.MAX_RETRIES + 1):
+        for _ in range(self.MAX_RETRIES):
             try:
-                raw = self._call_api(prompt=prompt, image_path=image_path)
+                raw = self._call_api(prompt=prompt, image_paths=image_paths)
                 result = self._parse_response(raw, receipt_id)
                 if result.is_valid():
                     return result
@@ -169,40 +142,24 @@ class BaseJudge(ABC):
             error=f"Max retries exceeded. Last error: {last_error}",
         )
 
-    # ------------------------------------------------------------------
-    # Subclass contract
-    # ------------------------------------------------------------------
-
     @abstractmethod
-    def _call_api(self, prompt: str, image_path: Path) -> str:
-        """
-        Call the LLM API and return the raw string response.
-        Must be implemented by each model-specific subclass.
-        """
+    def _call_api(self, prompt: str, image_paths: list[Path]) -> str:
         ...
 
-    # ------------------------------------------------------------------
-    # JSON parsing
-    # ------------------------------------------------------------------
-
     def _parse_response(self, raw: str, receipt_id: str) -> JudgeResult:
-        """Extract and validate JSON from the raw LLM response."""
         json_str = self._extract_json(raw)
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as exc:
             return JudgeResult.error_result(
-                self.judge_id, self.judge_name, receipt_id,
-                f"JSON decode error: {exc}",
+                self.judge_id, self.judge_name, receipt_id, f"JSON decode error: {exc}"
             )
 
-        # Normalise and validate fields
         label = str(data.get("label", "UNCERTAIN")).upper()
         if label not in VALID_LABELS:
             label = "UNCERTAIN"
 
-        confidence = float(data.get("confidence", 0.0))
-        confidence = max(0.0, min(100.0, confidence))
+        confidence = max(0.0, min(100.0, float(data.get("confidence", 0.0))))
 
         reasons = data.get("reasons", [])
         if not isinstance(reasons, list):
@@ -212,11 +169,9 @@ class BaseJudge(ABC):
             reasons += ["No reason provided"] * (2 - len(reasons))
 
         skill_results = data.get("skill_results", {})
-        # Accept both "typography_analysis" (canonical) and "typography" (legacy alias)
         if "typography" in skill_results and "typography_analysis" not in skill_results:
             skill_results["typography_analysis"] = skill_results.pop("typography")
-        for k in ["math_consistency", "typography_analysis", "visual_authenticity",
-                  "layout_structure", "contextual_validation"]:
+        for k in CANONICAL_SKILLS:
             if skill_results.get(k) not in VALID_SKILL_RESULTS:
                 skill_results[k] = "uncertain"
 
@@ -241,14 +196,6 @@ class BaseJudge(ABC):
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """
-        Attempt to extract a JSON object from the raw response text.
-        Handles markdown code fences and extra surrounding text.
-        """
-        # Strip markdown fences
         text = re.sub(r"```(?:json)?", "", text).strip()
-        # Find first { ... } block
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return match.group(0)
-        return text
+        return match.group(0) if match else text
