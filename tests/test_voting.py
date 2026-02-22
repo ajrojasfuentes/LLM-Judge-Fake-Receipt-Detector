@@ -67,7 +67,7 @@ def test_uncertain_threshold_forces_uncertain():
     assert verdict.label == "UNCERTAIN"
 
 
-def test_confidence_weighted_vote():
+def test_strategy_parameter_does_not_change_majority_behavior():
     engine = VotingEngine(strategy="confidence_weighted")
     results = [
         make_result("FAKE", 90.0, "j1"),
@@ -76,6 +76,7 @@ def test_confidence_weighted_vote():
     ]
     verdict = engine.aggregate(results)
     assert verdict.label == "FAKE"
+    assert verdict.strategy_used.startswith("majority_simple")
 
 
 def test_flags_are_unioned():

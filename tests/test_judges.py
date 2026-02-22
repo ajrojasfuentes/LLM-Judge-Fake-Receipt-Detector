@@ -19,7 +19,7 @@ class DummyJudge(BaseJudge):
         )
         self._fake_response = fake_response
 
-    def _call_api(self, prompt: str, image_path: Path) -> str:
+    def _call_api(self, prompt: str, image_paths: list[Path]) -> str:
         return self._fake_response
 
 

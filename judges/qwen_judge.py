@@ -1,8 +1,4 @@
-"""
-QwenJudge: Judge implementation using Qwen2.5-VL via HuggingFace Inference API.
-Supports two personas (Forensic Accountant and Document Examiner)
-via different temperatures and focus skills.
-"""
+"""Qwen judge implementation with optional multi-image VLM input."""
 
 from __future__ import annotations
 
@@ -16,14 +12,6 @@ from .base_judge import BaseJudge
 
 
 class QwenJudge(BaseJudge):
-    """
-    Judge backed by Qwen/Qwen2.5-VL-72B-Instruct via HuggingFace InferenceClient.
-
-    Two instances are created (different personas + temperatures):
-      - judge_1: Forensic Accountant, T=0.1
-      - judge_2: Document Examiner,   T=0.7
-    """
-
     MODEL_ID = "Qwen/Qwen2.5-VL-72B-Instruct"
 
     def __init__(
@@ -34,54 +22,39 @@ class QwenJudge(BaseJudge):
         temperature: float = 0.1,
         max_tokens: int = 1024,
         focus_skills: list[str] | None = None,
+        forensic_mode: str = "FULL",
     ):
         super().__init__(
             judge_id=judge_id,
             judge_name=judge_name,
             persona_description=persona_description,
             focus_skills=focus_skills,
+            forensic_mode=forensic_mode,
         )
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self._client = InferenceClient(
-            api_key=os.environ["HF_TOKEN"],
-        )
+        self._client = InferenceClient(api_key=os.environ["HF_TOKEN"])
 
-    def _call_api(self, prompt: str, image_path: Path) -> str:
-        """
-        Call Qwen2.5-VL with the receipt image (base64-encoded) and the judge prompt.
-        Uses the chat completions endpoint with vision support.
-        """
-        image_b64 = self._encode_image(image_path)
-        mime = self._get_mime(image_path)
+    def _call_api(self, prompt: str, image_paths: list[Path]) -> str:
+        content = []
+        for image_path in image_paths:
+            image_b64 = self._encode_image(image_path)
+            mime = self._get_mime(image_path)
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+                }
+            )
+        content.append({"type": "text", "text": prompt})
 
         response = self._client.chat.completions.create(
             model=self.MODEL_ID,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime};base64,{image_b64}"
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt,
-                        },
-                    ],
-                }
-            ],
+            messages=[{"role": "user", "content": content}],
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
         return response.choices[0].message.content
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _encode_image(image_path: Path) -> str:
@@ -90,19 +63,15 @@ class QwenJudge(BaseJudge):
 
     @staticmethod
     def _get_mime(image_path: Path) -> str:
-        ext = image_path.suffix.lower()
         return {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
             ".png": "image/png",
             ".tif": "image/tiff",
             ".tiff": "image/tiff",
-        }.get(ext, "image/jpeg")
+            ".webp": "image/webp",
+        }.get(image_path.suffix.lower(), "image/jpeg")
 
-
-# ---------------------------------------------------------------------------
-# Factory functions for the two Qwen personas
-# ---------------------------------------------------------------------------
 
 def make_forensic_accountant() -> QwenJudge:
     return QwenJudge(
@@ -116,6 +85,7 @@ def make_forensic_accountant() -> QwenJudge:
         temperature=0.2,
         max_tokens=1024,
         focus_skills=["math_consistency", "contextual_validation"],
+        forensic_mode="READING",
     )
 
 
@@ -131,4 +101,5 @@ def make_document_examiner() -> QwenJudge:
         temperature=0.6,
         max_tokens=1024,
         focus_skills=["typography_analysis", "visual_authenticity", "layout_structure"],
+        forensic_mode="GRAPHIC",
     )
