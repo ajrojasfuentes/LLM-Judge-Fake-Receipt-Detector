@@ -1,0 +1,80 @@
+{
+  "_description": "Template for GRAPHIC mode evidence pack (non-OCR signals only).",
+  "_version": "3.0.0",
+  "mode": "GRAPHIC",
+  "image_id": "<filename>",
+  "input_path": "<absolute image path>",
+  "output_dir": "<forensics/evidence/<image_id>>",
+  "global": {
+    "path": "<string>",
+    "filename": "<string>",
+    "bytes": "<int|null>",
+    "error": "<string|null>",
+    "format": "<string|null>",
+    "mode": "<string|null>",
+    "width": "<int>",
+    "height": "<int>",
+    "horizontal_resolution": "<float|null>",
+    "vertical_resolution": "<float|null>",
+    "has_alpha": "<bool>",
+    "bit_depth": "<int|null>",
+    "exif_orientation": "<int|null>",
+    "aspect_ratio": "<float|null>",
+    "brightness_mean": "<float>",
+    "brightness_std": "<float>",
+    "contrast_std": "<float>",
+    "blur_laplacian_var": "<float|null>",
+    "blur_tiles": {
+      "blur_tile_mean": "<float|null>",
+      "blur_tile_std": "<float|null>",
+      "blur_tile_min": "<float|null>",
+      "blur_tile_max": "<float|null>",
+      "tile": "<int>",
+      "tiles_hw": ["<int>", "<int>"]
+    },
+    "entropy": "<float>",
+    "edge_density": "<float|null>",
+    "edge_method": "<string>",
+    "edge_threshold": ["<int>", "<int>"],
+    "text_ink_ratio": "<float|null>",
+    "method": "<string>",
+    "params": {"block": "<int>", "C": "<int>"},
+    "skew_angle_deg": "<float|null>",
+    "skew_confidence": "<float|null>"
+  },
+  "forensic": {
+    "mela": {
+      "used_qualities": ["<int>"],
+      "block_sizes": ["<int>"],
+      "thr_percentile": "<float>",
+      "threshold_value": "<float>",
+      "suspicious_ratio": "<float>",
+      "peak_score": "<float>",
+      "percentiles": {"p50": "<float>", "p75": "<float>", "p90": "<float>", "p95": "<float>", "p97": "<float>", "p99": "<float>"}
+    },
+    "noise": {
+      "tile": "<int>",
+      "sigma": "<float>",
+      "max_tile_z": "<float>",
+      "mean_abs_resid": "<float>",
+      "std_tile_mean_abs_resid": "<float>"
+    },
+    "copy_move": {
+      "pairs_found": "<int>",
+      "good_matches": "<int>",
+      "keypoints": "<int>",
+      "reason": "<string|optional>"
+    }
+  },
+  "suspect_rois": [{"roi_id": "<string>", "bbox": ["<x>", "<y>", "<w>", "<h>"], "score": "<float>", "signals": ["<string>"], "entity_hint": "<string|null>", "ocr_snippet": "<string|null>", "crop_path": "<string|null>"}],
+  "copy_move_pairs": [{"translation_bin": ["<int>", "<int>"], "matches_in_cluster": "<int>", "src_bbox": ["<x>", "<y>", "<w>", "<h>"], "dst_bbox": ["<x>", "<y>", "<w>", "<h>"]}],
+  "artifacts": {
+    "input_image": "<string>",
+    "mela": {"mela_heat": "<path>", "mela_overlay": "<path>", "mela_rois": "<path>", "mela_roi_crops": ["<path>"]},
+    "noise": {"noise_heat": "<path>", "noise_overlay": "<path>"},
+    "copymove": {"copymove_rois": "<path>", "copymove_pair_grids": ["<path>"]}
+  },
+  "errors": {"<module>": "<error message>"},
+  "timing_ms": {"total": "<int>"},
+  "evidence_json": "<output json path>"
+}

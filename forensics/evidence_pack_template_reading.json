@@ -1,0 +1,43 @@
+{
+  "_description": "Template for READING mode evidence pack (OCR postprocess + semantic checks only).",
+  "_version": "3.0.0",
+  "mode": "READING",
+  "image_id": "<filename>",
+  "input_path": "<absolute image path>",
+  "output_dir": "<forensics/evidence/<image_id>>",
+  "reading": {
+    "source": "ocr_postprocess",
+    "txt_path": "<path|null>",
+    "quality_score": "<float|null>",
+    "structured": {
+      "quality_score": "<float>",
+      "cleaned_text": "<string>",
+      "company_lines": ["<string>"],
+      "date_candidates": ["<string>"],
+      "total_candidates": ["<string>"],
+      "item_candidates": ["<string>"],
+      "payment_candidates": ["<string>"],
+      "all_amounts": ["<decimal-string>"],
+      "parsed_lines": [{"idx": "<int>", "text": "<string>", "norm": "<string>", "money": [{"raw": "<string>", "value": "<decimal>", "currency": "<string|null>"}], "keywords": ["<string>"]}]
+    },
+    "arithmetic_report": {
+      "item_count": "<int>",
+      "item_sum": "<decimal-string>",
+      "subtotal": "<decimal-string|null>",
+      "tax": "<decimal-string|null>",
+      "discount": "<decimal-string|null>",
+      "rounding": "<decimal-string|null>",
+      "service_charge": "<decimal-string|null>",
+      "total": "<decimal-string|null>",
+      "paid": "<decimal-string|null>",
+      "change": "<decimal-string|null>",
+      "checks": [{"name": "<string>", "lhs": "<string|null>", "rhs": "<string|null>", "diff": "<string|null>", "diff_pct": "<float|null>", "passes": "<bool|null>", "details": {"<k>": "<v>"}}],
+      "arithmetic_consistent": "<bool|null>",
+      "best_explanation": "<string|null>"
+    },
+    "semantic_checks": [{"name": "<string>", "passed": "<bool|null>", "details": "<string>", "evidence": {"<k>": "<v>"}, "values": {"<k>": "<v>"}}]
+  },
+  "errors": {"<module>": "<error message>"},
+  "timing_ms": {"total": "<int>"},
+  "evidence_json": "<output json path>"
+}
