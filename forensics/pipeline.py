@@ -1,41 +1,8 @@
-"""
-forensics.pipeline — Orchestration layer for the modular
-forensic analysis toolkit.
+"""forensics.pipeline — main orchestration for forensic evidence packs.
 
-This module is the main entry-point for running all forensic analyses
-on a single receipt image.  It coordinates the following steps:
-
-1. **Global metrics** — Image metadata (format, DPI, EXIF), quality
-   descriptors (brightness, contrast, blur), entropy / edge / text-ink
-   metrics, and document skew estimation.
-2. **Forensic analyses** — Multi-Quality Error Level Analysis (MELA),
-   residual-noise inconsistency mapping, and ORB-based copy-move
-   detection.
-3. **OCR and semantic checks** — Text extraction via PaddleOCR or a
-   pre-existing ``.txt`` file, followed by accounting cross-checks
-   (subtotal + tax vs. total).
-4. **Evidence packing** — All results are merged into a single
-   JSON-serialisable dictionary (the *evidence pack*) and persisted to
-   ``evidence_pack.json`` inside the output directory.
-
-Each analysis step is wrapped in its own ``try / except`` block so that
-a failure in one module does not prevent the remaining modules from
-running.  Errors are recorded in the ``"errors"`` section of the
-evidence pack.
-
-Usage
------
-    from forensics_analysis.pipeline import build_evidence_pack
-
-    pack = build_evidence_pack(
-        image_path="receipt.png",
-        output_dir="outputs/forensic/receipt",
-        ocr_txt="receipt.txt",
-    )
-
-CLI
----
-    python -m forensics_analysis.pipeline --image receipt.png --out out/
+This pipeline runs graphic forensic analyzers (metadata/quality/entropy/skew,
+MELA/noise/copy-move) and reading analyzers (OCR post-processing + semantic
+checks from dataset-provided OCR text), then emits an evidence pack.
 """
 
 from __future__ import annotations
@@ -51,164 +18,157 @@ from .entropy_edges import entropy_edge_text_metrics
 from .metadata import extract_metadata
 from .mela import mela_analyze
 from .noise_inconsistency import noise_inconsistency
-from .ocr_adapter import run_ocr
+from .ocr_postprocess import extract_ocr_from_txt
 from .quality import blur_tile_stats, quality_metrics
-from .semantic_checks import semantic_checks
+from .semantic_check import semantic_checks_from_result
 from .skew import estimate_skew
 from .utils import ROI, ensure_dir, load_image_rgb, save_json
 
 logger = logging.getLogger(__name__)
 
+BASE_EVIDENCE_DIR = Path(__file__).parent / "evidence"
+VALID_MODES = {"GRAPHIC", "READING", "FULL"}
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+
+def _default_output_dir(image_path: Path) -> Path:
+    image_id = image_path.stem
+    return ensure_dir(BASE_EVIDENCE_DIR / image_id)
+
+
+def _build_mode_payload(mode: str, pack: Dict[str, Any]) -> Dict[str, Any]:
+    mode = mode.upper()
+    if mode == "GRAPHIC":
+        return {
+            "mode": "GRAPHIC",
+            "image_id": pack["image_id"],
+            "input_path": pack["input_path"],
+            "output_dir": pack["output_dir"],
+            "global": pack["global"],
+            "forensic": pack["forensic"],
+            "suspect_rois": pack["suspect_rois"],
+            "copy_move_pairs": pack["copy_move_pairs"],
+            "artifacts": pack["artifacts"],
+            "errors": pack["errors"],
+            "timing_ms": pack["timing_ms"],
+        }
+
+    if mode == "READING":
+        return {
+            "mode": "READING",
+            "image_id": pack["image_id"],
+            "input_path": pack["input_path"],
+            "output_dir": pack["output_dir"],
+            "reading": pack["reading"],
+            "errors": pack["errors"],
+            "timing_ms": pack["timing_ms"],
+        }
+
+    return {
+        "mode": "FULL",
+        **pack,
+    }
+
 
 def build_evidence_pack(
     image_path: Union[str, Path],
-    output_dir: Union[str, Path],
+    output_dir: Optional[Union[str, Path]] = None,
     ocr_txt: Optional[Union[str, Path]] = None,
+    mode: str = "FULL",
 ) -> Dict[str, Any]:
-    """Run every forensic module and assemble the evidence pack.
+    """Run forensics and build an evidence pack.
 
-    Parameters
-    ----------
-    image_path : str or Path
-        Path to the receipt image (PNG, JPEG, etc.).
-    output_dir : str or Path
-        Directory where output artifacts (heatmaps, overlays, crops,
-        and the final ``evidence_pack.json``) will be saved.
-    ocr_txt : str or Path, optional
-        Path to a pre-existing plain-text OCR transcription.  When
-        provided, PaddleOCR is skipped and lines are read from this
-        file instead.
-
-    Returns
-    -------
-    dict
-        The evidence pack — a JSON-serialisable dictionary with the
-        following top-level keys:
-
-        * ``"image_id"`` — Filename of the input image.
-        * ``"input_path"`` — Absolute string path to the input image.
-        * ``"output_dir"`` — Absolute string path to the output
-          directory.
-        * ``"global"`` — Merged metadata, quality, entropy, edge, and
-          skew metrics.
-        * ``"forensic"`` — Per-module summary dicts for MELA, noise,
-          and copy-move analyses.
-        * ``"suspect_rois"`` — List of :class:`ROI` instances flagged
-          by MELA.
-        * ``"copy_move_pairs"`` — List of copy-move pair dicts.
-        * ``"ocr"`` — OCR engine info, line count, and sample lines.
-        * ``"semantic_checks"`` — List of accounting check results.
-        * ``"artifacts"`` — Paths to all saved image artifacts.
-        * ``"errors"`` — Dict of module-name to error message for any
-          step that failed.
-        * ``"timing_ms"`` — Execution time in milliseconds.
-        * ``"evidence_json"`` — Path to the saved JSON file.
+    If output_dir is omitted, artifacts are saved at:
+      forensics/evidence/<image_id>/
     """
+    mode = mode.upper()
+    if mode not in VALID_MODES:
+        raise ValueError(f"Invalid mode '{mode}'. Valid: {sorted(VALID_MODES)}")
+
     t0 = time.time()
     image_path = Path(image_path)
-    outp = ensure_dir(output_dir)
-
+    outp = ensure_dir(output_dir) if output_dir else _default_output_dir(image_path)
     errors: Dict[str, str] = {}
 
-    # ------------------------------------------------------------------
-    # Load the source image
-    # ------------------------------------------------------------------
     rgb = load_image_rgb(image_path)
 
-    # ------------------------------------------------------------------
-    # 1) Global metrics (metadata, quality, entropy/edges, skew)
-    # ------------------------------------------------------------------
+    # 1) Global/graphic metrics
     meta: Dict[str, Any] = {}
-    try:
-        meta = extract_metadata(image_path)
-    except Exception as exc:
-        errors["metadata"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Metadata extraction failed: %s", exc)
-
     q: Dict[str, Any] = {}
-    try:
-        q = quality_metrics(rgb)
-    except Exception as exc:
-        errors["quality"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Quality metrics failed: %s", exc)
-
     q_tiles: Dict[str, Any] = {}
-    try:
-        q_tiles = blur_tile_stats(rgb, tile=64)
-    except Exception as exc:
-        errors["blur_tiles"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Blur tile stats failed: %s", exc)
-
     eet: Dict[str, Any] = {}
-    try:
-        eet = entropy_edge_text_metrics(rgb)
-    except Exception as exc:
-        errors["entropy_edges"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Entropy/edge metrics failed: %s", exc)
-
     skew_result: Dict[str, Any] = {}
-    try:
-        skew_result = estimate_skew(rgb)
-    except Exception as exc:
-        errors["skew"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Skew estimation failed: %s", exc)
 
-    # ------------------------------------------------------------------
-    # 2) Forensic analyses (MELA, noise, copy-move)
-    # ------------------------------------------------------------------
+    for key, fn in [
+        ("metadata", lambda: extract_metadata(image_path)),
+        ("quality", lambda: quality_metrics(rgb)),
+        ("blur_tiles", lambda: blur_tile_stats(rgb, tile=64)),
+        ("entropy_edges", lambda: entropy_edge_text_metrics(rgb)),
+        ("skew", lambda: estimate_skew(rgb)),
+    ]:
+        try:
+            val = fn()
+            if key == "metadata":
+                meta = val
+            elif key == "quality":
+                q = val
+            elif key == "blur_tiles":
+                q_tiles = val
+            elif key == "entropy_edges":
+                eet = val
+            elif key == "skew":
+                skew_result = val
+        except Exception as exc:
+            errors[key] = f"{type(exc).__name__}: {exc}"
+            logger.warning("%s failed: %s", key, exc)
+
+    # 2) Forensic image analyses
     mela: Dict[str, Any] = {"summary": {}, "rois": [], "artifacts": {}}
+    noise: Dict[str, Any] = {"summary": {}, "artifacts": {}}
+    cm: Dict[str, Any] = {"summary": {}, "pairs": [], "artifacts": {}}
+
     try:
         mela = mela_analyze(rgb, out_dir=str(outp / "mela"))
     except Exception as exc:
         errors["mela"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("MELA analysis failed: %s", exc)
+        logger.warning("MELA failed: %s", exc)
 
-    noise: Dict[str, Any] = {"summary": {}, "artifacts": {}}
     try:
         noise = noise_inconsistency(rgb, out_dir=str(outp / "noise"))
     except Exception as exc:
         errors["noise"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Noise analysis failed: %s", exc)
+        logger.warning("Noise failed: %s", exc)
 
-    cm: Dict[str, Any] = {"summary": {}, "pairs": [], "artifacts": {}}
     try:
         cm = copy_move_detect(rgb, out_dir=str(outp / "copymove"))
     except Exception as exc:
         errors["copy_move"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Copy-move detection failed: %s", exc)
+        logger.warning("Copy-move failed: %s", exc)
 
-    # ------------------------------------------------------------------
-    # 3) OCR + semantic checks
-    # ------------------------------------------------------------------
-    ocr: Dict[str, Any] = {"engine": "none", "lines": [], "boxes": None}
-    try:
-        ocr = run_ocr(rgb, txt_path=ocr_txt)
-    except Exception as exc:
-        errors["ocr"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("OCR failed: %s", exc)
+    # 3) OCR postprocess + semantic checks (dataset-provided pseudo OCR)
+    ocr_txt_path: Optional[Path] = Path(ocr_txt) if ocr_txt else None
+    reading: Dict[str, Any] = {
+        "source": "ocr_postprocess",
+        "txt_path": str(ocr_txt_path) if ocr_txt_path else None,
+        "structured": None,
+        "arithmetic_report": None,
+        "semantic_checks": [],
+    }
 
-    checks: List[Dict[str, Any]] = []
-    try:
-        checks = semantic_checks(ocr.get("lines", []) or [])
-    except Exception as exc:
-        errors["semantic_checks"] = f"{type(exc).__name__}: {exc}"
-        logger.warning("Semantic checks failed: %s", exc)
+    if ocr_txt_path is not None and ocr_txt_path.exists():
+        try:
+            ocr_res = extract_ocr_from_txt(ocr_txt_path)
+            reading["structured"] = ocr_res.structured.to_dict()
+            reading["arithmetic_report"] = ocr_res.arithmetic_report.to_dict()
+            reading["semantic_checks"] = semantic_checks_from_result(ocr_res)
+            reading["quality_score"] = ocr_res.structured.quality_score
+        except Exception as exc:
+            errors["ocr_postprocess"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("OCR postprocess failed: %s", exc)
+    else:
+        errors["ocr_postprocess"] = "OCR .txt path not provided or file does not exist"
 
-    # ------------------------------------------------------------------
-    # 4) Collect suspect ROIs from MELA
-    # ------------------------------------------------------------------
-    rois: List[ROI] = []
-    for r in mela.get("rois", []):
-        if isinstance(r, ROI):
-            rois.append(r)
+    rois: List[ROI] = [r for r in mela.get("rois", []) if isinstance(r, ROI)]
 
-    # ------------------------------------------------------------------
-    # 5) Assemble the evidence pack
-    # ------------------------------------------------------------------
     artifacts: Dict[str, Any] = {
         "input_image": str(image_path),
         "mela": mela.get("artifacts", {}),
@@ -216,9 +176,7 @@ def build_evidence_pack(
         "copymove": cm.get("artifacts", {}),
     }
 
-    ocr_lines = ocr.get("lines", []) or []
-
-    pack: Dict[str, Any] = {
+    core_pack: Dict[str, Any] = {
         "image_id": image_path.name,
         "input_path": str(image_path),
         "output_dir": str(outp),
@@ -236,48 +194,32 @@ def build_evidence_pack(
         },
         "suspect_rois": rois,
         "copy_move_pairs": cm.get("pairs", []),
-        "ocr": {
-            "engine": ocr.get("engine"),
-            "num_lines": len(ocr_lines),
-            "sample_lines": ocr_lines[:25],
-            "has_boxes": bool(ocr.get("boxes")),
-        },
-        "semantic_checks": checks,
+        "reading": reading,
         "artifacts": artifacts,
         "errors": errors,
         "timing_ms": {"total": int((time.time() - t0) * 1000)},
     }
 
-    # Persist the evidence pack to disk
-    json_path = save_json(pack, outp / "evidence_pack.json")
+    pack = _build_mode_payload(mode, core_pack)
+    json_path = str(outp / "evidence_pack.json")
     pack["evidence_json"] = json_path
+    save_json(pack, json_path)
     return pack
 
 
-# ---------------------------------------------------------------------------
-# CLI entry-point
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-    """Command-line interface for running the forensic pipeline."""
-    ap = argparse.ArgumentParser(
-        description="Run modular forensic analysis on a receipt image.",
-    )
+    ap = argparse.ArgumentParser(description="Run modular forensic analysis on a receipt image.")
+    ap.add_argument("--image", required=True, help="Path to receipt image (PNG/JPG).")
     ap.add_argument(
-        "--image", required=True,
-        help="Path to the receipt image (PNG/JPG).",
+        "--out",
+        default=None,
+        help="Output dir (default: forensics/evidence/<image_id>/).",
     )
-    ap.add_argument(
-        "--out", required=True,
-        help="Output directory for artifacts and JSON.",
-    )
-    ap.add_argument(
-        "--ocr_txt", default=None,
-        help="Optional path to a pre-existing OCR .txt transcription.",
-    )
+    ap.add_argument("--ocr_txt", default=None, help="Path to paired OCR .txt file.")
+    ap.add_argument("--mode", choices=sorted(VALID_MODES), default="FULL")
     args = ap.parse_args()
 
-    pack = build_evidence_pack(args.image, args.out, ocr_txt=args.ocr_txt)
+    pack = build_evidence_pack(args.image, args.out, ocr_txt=args.ocr_txt, mode=args.mode)
     print(pack["evidence_json"])
 
 

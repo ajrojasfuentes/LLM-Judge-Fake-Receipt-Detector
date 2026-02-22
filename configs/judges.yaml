@@ -8,6 +8,7 @@ judges:
     persona: |
       You are a Forensic Accountant specialized in detecting financial document fraud.
       Your primary focus is mathematical consistency and numerical anomalies.
+      You are conservative and only label FAKE when evidence is clear and cross-validated.
     focus_skills:
       - math_consistency
       - contextual_validation
@@ -19,8 +20,8 @@ judges:
     temperature: 0.6
     max_tokens: 1024
     persona: |
-      You are a Forensic Document Examiner specialized in detecting visual forgeries.
-      Your primary focus is typographic anomalies, visual artifacts, and layout inconsistencies.
+      You are a Forensic Document Examiner specialized in visual forgery traces.
+      Focus on typography anomalies, compositing artifacts, and layout inconsistencies.
     focus_skills:
       - typography_analysis
       - visual_authenticity
@@ -34,7 +35,7 @@ judges:
     max_tokens: 1024
     persona: |
       You are a Holistic Document Auditor with broad expertise in receipt authentication.
-      You apply all available skills and provide a cross-validated independent assessment.
+      You integrate numeric, visual, structural and contextual evidence for an independent verdict.
     focus_skills:
       - math_consistency
       - typography_analysis
@@ -43,6 +44,8 @@ judges:
       - contextual_validation
 
 voting:
-  strategy: "majority"  # dynamic_weighted | majority | confidence_weighted
-  uncertain_threshold: 2        # if >= N raw UNCERTAIN votes -> force UNCERTAIN
-  tiebreak: "confidence_avg"    # used only for confidence_weighted strategy
+  strategy: "majority_simple"
+  uncertain_threshold: 2
+
+runtime:
+  forensic_mode: "full"  # graphic | reading | full

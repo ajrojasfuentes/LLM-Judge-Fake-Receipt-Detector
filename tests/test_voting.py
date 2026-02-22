@@ -1,6 +1,5 @@
 """Tests for the VotingEngine."""
 
-import pytest
 from judges.base_judge import JudgeResult
 from judges.voting import VotingEngine
 
@@ -23,7 +22,7 @@ def make_result(label: str, confidence: float, judge_id: str = "j1") -> JudgeRes
 
 
 def test_majority_fake_2_of_3():
-    engine = VotingEngine(strategy="majority")
+    engine = VotingEngine()
     results = [
         make_result("FAKE", 90.0, "j1"),
         make_result("FAKE", 80.0, "j2"),
@@ -35,7 +34,7 @@ def test_majority_fake_2_of_3():
 
 
 def test_majority_real_2_of_3():
-    engine = VotingEngine(strategy="majority")
+    engine = VotingEngine()
     results = [
         make_result("REAL", 90.0, "j1"),
         make_result("REAL", 85.0, "j2"),
@@ -45,8 +44,8 @@ def test_majority_real_2_of_3():
     assert verdict.label == "REAL"
 
 
-def test_majority_uncertain_when_no_majority():
-    engine = VotingEngine(strategy="majority")
+def test_tie_returns_uncertain():
+    engine = VotingEngine()
     results = [
         make_result("FAKE", 60.0, "j1"),
         make_result("REAL", 60.0, "j2"),
@@ -56,30 +55,7 @@ def test_majority_uncertain_when_no_majority():
     assert verdict.label == "UNCERTAIN"
 
 
-def test_uncertain_threshold_forces_uncertain():
-    engine = VotingEngine(strategy="majority", uncertain_threshold=2)
-    results = [
-        make_result("UNCERTAIN", 40.0, "j1"),
-        make_result("UNCERTAIN", 35.0, "j2"),
-        make_result("FAKE", 80.0, "j3"),
-    ]
-    verdict = engine.aggregate(results)
-    assert verdict.label == "UNCERTAIN"
-
-
-def test_confidence_weighted_vote():
-    engine = VotingEngine(strategy="confidence_weighted")
-    results = [
-        make_result("FAKE", 90.0, "j1"),
-        make_result("REAL", 30.0, "j2"),
-        make_result("FAKE", 70.0, "j3"),
-    ]
-    verdict = engine.aggregate(results)
-    assert verdict.label == "FAKE"
-
-
-def test_flags_are_unioned():
-    from judges.base_judge import JudgeResult
+def test_flags_are_unioned_and_weighted_scores_exist():
     r1 = make_result("FAKE", 80.0, "j1")
     r1.flags = ["TOTAL_MISMATCH"]
     r2 = make_result("FAKE", 75.0, "j2")
@@ -91,5 +67,5 @@ def test_flags_are_unioned():
     verdict = engine.aggregate([r1, r2, r3])
     assert "TOTAL_MISMATCH" in verdict.all_flags
     assert "FONT_INCONSISTENCY" in verdict.all_flags
-    # No duplicates
     assert verdict.all_flags.count("TOTAL_MISMATCH") == 1
+    assert set(verdict.weighted_scores.keys()) == {"FAKE", "REAL", "UNCERTAIN"}

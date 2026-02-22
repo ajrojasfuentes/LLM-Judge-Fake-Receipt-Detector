@@ -1,18 +1,11 @@
-"""
-GLMJudge: Judge implementation using GLM-4.1V-9B-Thinking via Hugging Face Inference Providers (router).
-Acts as the third independent "Holistic Auditor" judge.
-
-Requires:
-- HF_TOKEN env var with permissions to call Inference Providers.
-Optionally:
-- Set routing to "novita" (provider) or "fastest"/"cheapest"/"preferred" (policies).
-"""
+"""GLM judge implementation with multi-image support."""
 
 from __future__ import annotations
 
 import base64
 import os
 from pathlib import Path
+from typing import Sequence
 
 from huggingface_hub import InferenceClient
 
@@ -20,11 +13,6 @@ from .base_judge import BaseJudge
 
 
 class GLMJudge(BaseJudge):
-    """
-    Judge backed by zai-org/GLM-4.5V via Hugging Face Inference Providers.
-    Serves as the Holistic Auditor — applies all skills for a cross-validated verdict.
-    """
-
     MODEL_ID = "zai-org/GLM-4.5V"
 
     def __init__(
@@ -33,19 +21,19 @@ class GLMJudge(BaseJudge):
         judge_name: str = "Holistic Auditor",
         persona_description: str = (
             "You are a Holistic Document Auditor with broad expertise in receipt authentication. "
-            "You apply all forensic skills and provide a cross-validated, independent assessment. "
-            "You treat mathematical, typographic, visual, structural, and contextual evidence with equal weight."
+            "You apply all forensic skills and provide a cross-validated, independent assessment."
         ),
         temperature: float = 0.3,
         max_tokens: int = 1024,
         focus_skills: list[str] | None = None,
         timeout_s: float = 120.0,
+        model_id: str | None = None,
     ):
         super().__init__(
             judge_id=judge_id,
             judge_name=judge_name,
             persona_description=persona_description,
-            focus_skills=focus_skills,  # None → all skills with equal weight
+            focus_skills=focus_skills,
         )
 
         hf_token = os.getenv("HF_TOKEN")
@@ -54,42 +42,29 @@ class GLMJudge(BaseJudge):
 
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.model_id = model_id or self.MODEL_ID
+        self._client = InferenceClient(api_key=hf_token, timeout=timeout_s)
 
-        # routing can be a provider name (e.g., "novita") or a policy ("fastest", "cheapest", "preferred")
-        # We'll form the routed model id accordingly: "<model>:<routing>"
-        self._routed_model = self.MODEL_ID
-
-        self._client = InferenceClient(
-            api_key=hf_token,
-            timeout=timeout_s,
-        )
-
-    def _call_api(self, prompt: str, image_path: Path) -> str:
-        """
-        Call GLM-4.5V with the receipt image and the judge prompt via chat completions (VLM).
-        Accepts a local image by sending it as a data URL (base64).
-        """
-        image_b64 = self._encode_image(image_path)
-        mime = self._get_mime(image_path)
+    def _call_api(self, prompt: str, image_paths: Sequence[Path]) -> str:
+        user_content = [{"type": "text", "text": prompt}]
+        for img in image_paths:
+            image_b64 = self._encode_image(img)
+            mime = self._get_mime(img)
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+                }
+            )
 
         messages = [
             {"role": "system", "content": self.persona_description},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{image_b64}"},
-                    },
-                ],
-            },
+            {"role": "user", "content": user_content},
         ]
 
-        # Preferred API (matches Hugging Face Inference Providers docs and your example)
         try:
             completion = self._client.chat.completions.create(
-                model=self._routed_model,
+                model=self.model_id,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -97,19 +72,14 @@ class GLMJudge(BaseJudge):
             content = completion.choices[0].message.content
             return content if isinstance(content, str) else str(content)
         except AttributeError:
-            # Backward-compat fallback for older huggingface_hub versions
             completion = self._client.chat_completion(
-                model=self._routed_model,
+                model=self.model_id,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
             content = completion.choices[0].message.content
             return content if isinstance(content, str) else str(content)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _encode_image(image_path: Path) -> str:

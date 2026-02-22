@@ -29,7 +29,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ocr_postprocess import (
+from .ocr_postprocess import (
     OCRParseConfig,
     OCRExtractionResult,
     OCRStructured,

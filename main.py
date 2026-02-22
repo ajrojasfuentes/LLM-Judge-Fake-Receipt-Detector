@@ -1,365 +1,264 @@
-"""
-main.py — CLI entry point for the LLM-Judge Fake Receipt Detector.
+"""High-level API + CLI for receipt judging pipeline.
 
-Dataset: Find it again! — Receipt Dataset for Document Forgery Detection
-         https://l3i-share.univ-lr.fr/2023Finditagain/index.html
-
-Commands:
-  download    Download and extract the Find-It-Again dataset
-  sample      Select 20 receipts (10 REAL + 10 FAKE) from the train split
-  run         Run all 3 LLM judges on the sampled receipts, with optional forensic pre-analysis
-  evaluate    Compute accuracy, precision, recall, F1, and confusion matrix
-  demo        Run a single receipt through all 3 judges (quick demo)
-  forensic    Run forensic pre-analysis on a single receipt and print the context report
-
-Usage examples:
-  python main.py download
-  python main.py sample
-  python main.py run
-  python main.py run --forensic              # Run with forensic pre-analysis
-  python main.py evaluate
-  python main.py demo X00016469622
-  python main.py forensic X00016469622
+This module can be imported from notebooks and used as an API, while still
+providing CLI commands for dataset preparation, batch execution and evaluation.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from forensics.pipeline import build_evidence_pack
+from judges import VotingEngine, load_judges_from_config
+from pipeline.dataset import DatasetManager
+from pipeline.evaluator import Evaluator
+from pipeline.sampler import ReceiptSampler
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-def cmd_download(args):
-    from pipeline.dataset import DatasetManager
-    dm = DatasetManager()
-    dm.download()
-    dm.extract()
-    print("[download] Done. Dataset extracted to data/raw/findit2/")
+@dataclass
+class RunConfig:
+    judges_config_path: str = "configs/judges.yaml"
+    results_dir: str = "outputs/results"
+    forensic_mode: str = "full"  # graphic|reading|full
 
 
-def cmd_sample(args):
-    from pipeline.dataset import DatasetManager
-    from pipeline.sampler import ReceiptSampler
-
-    dm = DatasetManager()
-    sampler = ReceiptSampler()
-
-    print(f"[sample] Loading labels from '{sampler.split}' split ...")
-    labels = dm.load_labels(sampler.split)
-
-    print(f"[sample] Selecting {sampler.real_count} REAL + {sampler.fake_count} FAKE "
-          f"(seed={sampler.random_seed}) ...")
-    sample = sampler.sample(labels, dataset_manager=dm)
-    sampler.save(sample)
-
-    print(f"\n[sample] Selected {len(sample)} receipts:")
-    for r in sample:
-        img_status = "found" if r.get("image_path") else "NOT FOUND"
-        txt_status = "found" if r.get("ocr_txt_path") else "not found"
-        print(f"  {r['id']:40s} {r['label']}  img:{img_status}  ocr:{txt_status}")
+def _load_runtime_config(config_path: str = "configs/judges.yaml") -> Dict[str, Any]:
+    with open(config_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    return cfg
 
 
-def cmd_run(args):
-    from pipeline.dataset import DatasetManager
-    from pipeline.sampler import ReceiptSampler
-    from judges.qwen_judge import make_forensic_accountant, make_document_examiner
-    from judges.glm_judge import GLMJudge
-    from judges.voting import VotingEngine
-    import yaml
-
-    use_forensic = getattr(args, "forensic", False)
-
-    dm = DatasetManager()
-    sampler = ReceiptSampler()
-    sample = sampler.load()
-
-    judges = [
-        make_forensic_accountant(),
-        make_document_examiner(),
-        GLMJudge(),
+def _build_forensic_prompt_section(pack: Dict[str, Any]) -> str:
+    lines = [
+        "=== FORENSIC PRE-ANALYSIS (SYSTEM GENERATED) ===",
+        f"Mode: {pack.get('mode', 'FULL')}",
     ]
 
-    cfg_path = Path("configs/judges.yaml")
-    with open(cfg_path) as f:
-        cfg = yaml.safe_load(f)
-    voting_cfg = cfg.get("voting", {})
+    if "forensic" in pack:
+        forensic = pack.get("forensic", {})
+        mela = forensic.get("mela", {})
+        noise = forensic.get("noise", {})
+        cm = forensic.get("copy_move", {})
+        lines += [
+            f"MELA suspicious_ratio: {mela.get('suspicious_ratio', 'n/a')}",
+            f"MELA peak_score: {mela.get('peak_score', 'n/a')}",
+            f"Noise max_tile_z: {noise.get('max_tile_z', 'n/a')}",
+            f"CopyMove pairs_found: {cm.get('pairs_found', 'n/a')}",
+        ]
+
+    reading = pack.get("reading")
+    if isinstance(reading, dict):
+        ar = reading.get("arithmetic_report") or {}
+        lines += [
+            f"OCR quality_score: {reading.get('quality_score', 'n/a')}",
+            f"Arithmetic consistent: {ar.get('arithmetic_consistent', 'n/a')}",
+            f"Arithmetic best_explanation: {ar.get('best_explanation', 'n/a')}",
+        ]
+
+    if pack.get("errors"):
+        lines.append(f"Pipeline errors: {pack['errors']}")
+
+    lines.append("=== END FORENSIC PRE-ANALYSIS ===")
+    return "\n".join(lines)
+
+
+def _collect_aux_images(image_path: Path, mode: str) -> List[Path]:
+    mode = mode.lower()
+    if mode not in {"graphic", "full"}:
+        return []
+
+    image_id = image_path.stem
+    base = Path("forensics/evidence") / image_id
+    candidates = [
+        base / "mela" / "mela_heat.png",
+        base / "mela" / "mela_overlay.png",
+        base / "mela" / "mela_rois.png",
+        base / "noise" / "noise_overlay.png",
+        base / "noise" / "noise_heat.png",
+        base / "copymove" / "copymove_rois.png",
+    ]
+    return [p for p in candidates if p.exists()]
+
+
+def run_single_receipt(
+    receipt_id: str,
+    split: Optional[str] = None,
+    ground_truth: Optional[str] = None,
+    config: Optional[RunConfig] = None,
+) -> Dict[str, Any]:
+    cfg = config or RunConfig()
+    raw_cfg = _load_runtime_config(cfg.judges_config_path)
+    runtime = raw_cfg.get("runtime", {})
+    forensic_mode = runtime.get("forensic_mode", cfg.forensic_mode)
+
+    dm = DatasetManager()
+
+    found_split = split
+    image_path = None
+    ocr_path = None
+
+    if split:
+        image_path = dm.find_image(receipt_id, split)
+        ocr_path = dm.find_ocr_txt(receipt_id, split)
+    else:
+        for s in ["train", "val", "test"]:
+            image_path = dm.find_image(receipt_id, s)
+            if image_path is not None:
+                found_split = s
+                ocr_path = dm.find_ocr_txt(receipt_id, s)
+                break
+
+    if image_path is None:
+        raise FileNotFoundError(f"Image not found for receipt_id={receipt_id}")
+
+    evidence_pack = build_evidence_pack(
+        image_path=image_path,
+        output_dir=None,
+        ocr_txt=ocr_path,
+        mode=forensic_mode,
+    )
+    forensic_prompt = _build_forensic_prompt_section(evidence_pack)
+    aux_images = _collect_aux_images(image_path, forensic_mode)
+
+    judges = load_judges_from_config(cfg.judges_config_path)
+    voting_cfg = raw_cfg.get("voting", {})
     engine = VotingEngine(
-        strategy=voting_cfg.get("strategy", "majority"),
+        strategy=voting_cfg.get("strategy", "majority_simple"),
         uncertain_threshold=voting_cfg.get("uncertain_threshold", 2),
     )
 
-    # Initialize forensic pipeline if requested
-    forensic_pipeline = None
-    if use_forensic:
-        from pipeline.forensic_pipeline import ForensicPipeline
-        forensic_pipeline = ForensicPipeline(
-            output_dir="outputs/forensic",
-            save_images=True,
-            verbose=False,
+    judge_results = []
+    for judge in judges:
+        result = judge.judge(
+            receipt_id=receipt_id,
+            image_path=image_path,
+            forensic_context=forensic_prompt,
+            extra_image_paths=aux_images,
         )
-        print("[run] Forensic pre-analysis ENABLED — signals prepended to judge prompts.")
+        judge_results.append(result)
 
-    results_dir = Path("outputs/results")
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    for receipt in sample:
-        receipt_id = receipt["id"]
-        split = receipt.get("split", "train")
-
-        # Resolve image path (try from sample dict first, then search)
-        image_path = None
-        if receipt.get("image_path"):
-            p = Path(receipt["image_path"])
-            if p.exists():
-                image_path = p
-        if image_path is None:
-            image_path = dm.find_image(receipt_id, split)
-
-        if image_path is None:
-            print(f"[run] WARNING: Image not found for {receipt_id}. Skipping.")
-            continue
-
-        print(f"\n[run] Processing: {receipt_id} (GT: {receipt['label']})")
-
-        # Run forensic pre-analysis
-        forensic_context = None
-        if forensic_pipeline is not None:
-            ocr_path = receipt.get("ocr_txt_path")
-            if ocr_path is None:
-                ocr_path = dm.find_ocr_txt(receipt_id, split)
-            print(f"  → Forensic analysis ...", end=" ", flush=True)
-            forensic_context = forensic_pipeline.analyze(
-                image_path,
-                ocr_txt_path=ocr_path,
-            )
-            mela_info = (f"MELA={forensic_context.multi_ela_suspicious_ratio:.0%}"
-                         if forensic_context.multi_ela_suspicious_ratio is not None
-                         else "MELA=N/A")
-            cm_info = (f"CM={forensic_context.cm_confidence:.2f}"
-                       if forensic_context.cm_confidence is not None else "CM=N/A")
-            arith = forensic_context.ocr_arithmetic_report
-            arith_info = ""
-            if arith is not None:
-                consistent = arith.get("arithmetic_consistent")
-                if consistent is False:
-                    arith_info = "  ARITH=⚠"
-                elif consistent is True:
-                    arith_info = "  ARITH=✓"
-            print(f"{mela_info}  {cm_info}{arith_info}")
-
-        # Run judges
-        judge_results = []
-        for judge in judges:
-            print(f"  → {judge.judge_name} ...", end=" ", flush=True)
-            result = judge.judge(
-                receipt_id=receipt_id,
-                image_path=image_path,
-                forensic_context=forensic_context,
-            )
-            print(f"{result.label} ({result.confidence:.1f}%)")
-            judge_results.append(result)
-
-        verdict = engine.aggregate(judge_results)
-        output = verdict.to_dict()
-        output["ground_truth"] = receipt["label"]
-        output["forensic_used"] = use_forensic
-
-        out_path = results_dir / f"{receipt_id}.json"
-        with open(out_path, "w") as f:
-            json.dump(output, f, indent=2)
-
-        match = "CORRECT" if verdict.label == receipt["label"] else "WRONG"
-        u_str = f"  u={verdict.verdict_uncertainty:.2f}" if hasattr(verdict, "verdict_uncertainty") else ""
-        print(f"  → VERDICT: {verdict.tally}{u_str}  GT: {receipt['label']}  [{match}]")
-
-    print("\n[run] All receipts processed.")
+    verdict = engine.aggregate(judge_results)
+    out = verdict.to_dict()
+    out["forensic_mode"] = forensic_mode
+    out["forensic_evidence_json"] = evidence_pack.get("evidence_json")
+    out["forensic_aux_images"] = [str(p) for p in aux_images]
+    out["split"] = found_split
+    if ground_truth:
+        out["ground_truth"] = ground_truth
+    return out
 
 
-def cmd_evaluate(args):
-    from pipeline.evaluator import Evaluator
-    from pipeline.sampler import ReceiptSampler
+def run_sample_batch(config: Optional[RunConfig] = None) -> List[Dict[str, Any]]:
+    cfg = config or RunConfig()
+    sampler = ReceiptSampler()
+    sample = sampler.load()
 
+    out_dir = Path(cfg.results_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs: List[Dict[str, Any]] = []
+    for rec in sample:
+        result = run_single_receipt(
+            receipt_id=rec["id"],
+            split=rec.get("split"),
+            ground_truth=rec.get("label"),
+            config=cfg,
+        )
+        outputs.append(result)
+        with open(out_dir / f"{rec['id']}.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+    return outputs
+
+
+def evaluate_results() -> Dict[str, Any]:
     sampler = ReceiptSampler()
     sample = sampler.load()
     ground_truth = {r["id"]: r["label"] for r in sample}
 
     ev = Evaluator()
     ev.load_results()
+    return ev.summary(ground_truth)
 
-    summary = ev.summary(ground_truth)
-    print("\n=== EVALUATION SUMMARY ===")
-    print(json.dumps(summary, indent=2))
 
-    print("\n=== DISAGREEMENT CASES ===")
-    for case in ev.disagreement_cases(n=3):
-        print(f"\nReceipt: {case['receipt_id']}  GT: {case.get('ground_truth', '?')}  "
-              f"Verdict: {case['label']}")
-        for j in case.get("judges", []):
-            print(f"  [{j['judge_name']}] {j['label']} ({j['confidence']:.1f}%) "
-                  f"— {j['reasons'][:2]}")
+# ---------------- CLI ---------------- #
+
+def cmd_download(_args):
+    dm = DatasetManager()
+    dm.download()
+    dm.extract()
+    print("[download] Done")
+
+
+def cmd_sample(_args):
+    dm = DatasetManager()
+    sampler = ReceiptSampler()
+    labels = dm.load_labels(sampler.split)
+    sample = sampler.sample(labels, dataset_manager=dm)
+    sampler.save(sample)
+    print(f"[sample] Saved {len(sample)} receipts")
+
+
+def cmd_run(_args):
+    outputs = run_sample_batch()
+    print(f"[run] Processed {len(outputs)} receipts")
+
+
+def cmd_evaluate(_args):
+    print(json.dumps(evaluate_results(), indent=2, ensure_ascii=False))
 
 
 def cmd_demo(args):
-    """Quick demo: run 3 judges on a single receipt and print results."""
-    from pipeline.dataset import DatasetManager
-    from judges.qwen_judge import make_forensic_accountant, make_document_examiner
-    from judges.glm_judge import GLMJudge
-    from judges.voting import VotingEngine
-
-    receipt_id = args.receipt_id
-    use_forensic = getattr(args, "forensic", False)
-
-    dm = DatasetManager()
-
-    # Try all splits to find the image
-    image_path = None
-    found_split = None
-    for split in ["train", "val", "test"]:
-        p = dm.find_image(receipt_id, split)
-        if p is not None:
-            image_path = p
-            found_split = split
-            break
-
-    if image_path is None:
-        print(f"[demo] ERROR: Image not found for ID '{receipt_id}'")
-        sys.exit(1)
-
-    print(f"\n=== DEMO: {receipt_id} ===")
-    print(f"Image : {image_path}")
-    print(f"Split : {found_split}")
-
-    # Forensic pre-analysis (optional)
-    forensic_context = None
-    if use_forensic:
-        from pipeline.forensic_pipeline import ForensicPipeline
-        fp = ForensicPipeline(output_dir="outputs/forensic", save_images=True, verbose=True)
-        ocr_path = dm.find_ocr_txt(receipt_id, found_split)
-        print(f"\nRunning forensic pre-analysis ...")
-        forensic_context = fp.analyze(image_path, ocr_txt_path=ocr_path)
-        print(forensic_context.to_prompt_section())
-
-    judges = [
-        make_forensic_accountant(),
-        make_document_examiner(),
-        GLMJudge(),
-    ]
-    engine = VotingEngine()
-
-    results = []
-    for judge in judges:
-        print(f"\nRunning {judge.judge_name}...")
-        r = judge.judge(
-            receipt_id=receipt_id,
-            image_path=image_path,
-            forensic_context=forensic_context,
-        )
-        results.append(r)
-        print(json.dumps(r.to_dict(), indent=2))
-
-    verdict = engine.aggregate(results)
-    print("\n=== FINAL VERDICT ===")
-    print(json.dumps(verdict.to_dict(), indent=2))
+    result = run_single_receipt(receipt_id=args.receipt_id)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def cmd_forensic(args):
-    """Run forensic pre-analysis on a single receipt and print the full context report."""
-    from pipeline.dataset import DatasetManager
-    from pipeline.forensic_pipeline import ForensicPipeline
-
-    receipt_id = args.receipt_id
     dm = DatasetManager()
-
     image_path = None
     found_split = None
-    for split in ["train", "val", "test"]:
-        p = dm.find_image(receipt_id, split)
-        if p is not None:
-            image_path = p
-            found_split = split
+    for s in ["train", "val", "test"]:
+        image_path = dm.find_image(args.receipt_id, s)
+        if image_path is not None:
+            found_split = s
             break
-
     if image_path is None:
-        print(f"[forensic] ERROR: Image not found for ID '{receipt_id}'")
-        sys.exit(1)
+        raise FileNotFoundError(f"Image not found for {args.receipt_id}")
 
-    ocr_path = dm.find_ocr_txt(receipt_id, found_split)
+    ocr = dm.find_ocr_txt(args.receipt_id, found_split)
+    cfg = _load_runtime_config()
+    mode = cfg.get("runtime", {}).get("forensic_mode", "full")
+    pack = build_evidence_pack(image_path=image_path, output_dir=None, ocr_txt=ocr, mode=mode)
+    print(json.dumps(pack, indent=2, ensure_ascii=False))
 
-    print(f"\n=== FORENSIC ANALYSIS: {receipt_id} ===")
-    print(f"Image : {image_path}")
-    print(f"OCR   : {ocr_path or 'not found'}")
-    print(f"Split : {found_split}\n")
-
-    fp = ForensicPipeline(
-        output_dir="outputs/forensic",
-        save_images=True,
-        verbose=True,
-    )
-    ctx = fp.analyze(image_path, ocr_txt_path=ocr_path)
-
-    print("\n" + ctx.to_prompt_section())
-
-    if ctx.errors:
-        print(f"\n[forensic] Analysis errors: {ctx.errors}")
-    else:
-        print("\n[forensic] Analysis complete. Forensic images saved to outputs/forensic/")
-
-
-# ---------------------------------------------------------------------------
-# Argument parser
-# ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="LLM-Judge Fake Receipt Detector — Find it again! dataset",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  python main.py download\n"
-            "  python main.py sample\n"
-            "  python main.py run\n"
-            "  python main.py run --forensic\n"
-            "  python main.py evaluate\n"
-            "  python main.py demo X00016469622\n"
-            "  python main.py demo X00016469622 --forensic\n"
-            "  python main.py forensic X00016469622\n"
-        ),
-    )
+    parser = argparse.ArgumentParser(description="LLM-Judge Fake Receipt Detector")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("download", help="Download and extract the Find-It-Again dataset")
-    sub.add_parser("sample", help="Select 20 receipts (10 REAL + 10 FAKE) from train split")
+    sub.add_parser("download")
+    sub.add_parser("sample")
+    sub.add_parser("run")
+    sub.add_parser("evaluate")
 
-    run_p = sub.add_parser("run", help="Run 3 LLM judges on all sampled receipts")
-    run_p.add_argument(
-        "--forensic", action="store_true",
-        help="Pre-compute forensic signals (Multi-ELA, noise, copy-move, OCR + arithmetic) and include in prompts",
-    )
+    demo_p = sub.add_parser("demo")
+    demo_p.add_argument("receipt_id")
 
-    sub.add_parser("evaluate", help="Compute evaluation metrics (accuracy, F1, confusion matrix)")
-
-    demo_p = sub.add_parser("demo", help="Run judges on a single receipt (quick demo)")
-    demo_p.add_argument("receipt_id", help="Receipt filename stem (without extension)")
-    demo_p.add_argument(
-        "--forensic", action="store_true",
-        help="Include forensic pre-analysis in the demo",
-    )
-
-    forensic_p = sub.add_parser("forensic", help="Run forensic pre-analysis on a single receipt")
-    forensic_p.add_argument("receipt_id", help="Receipt filename stem (without extension)")
+    forensic_p = sub.add_parser("forensic")
+    forensic_p.add_argument("receipt_id")
 
     return parser
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-
     commands = {
         "download": cmd_download,
         "sample": cmd_sample,
@@ -369,3 +268,7 @@ if __name__ == "__main__":
         "forensic": cmd_forensic,
     }
     commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()
