@@ -91,7 +91,7 @@ Return **exactly one JSON object** and **nothing else**.
 1. `"label"` MUST be **exactly one of**: `"REAL"`, `"FAKE"`, `"UNCERTAIN"`.
 2. `"confidence"` MUST be a **float** in `[0.0, 100.0]` and **not overestimated**.
 3. `"reasons"` MUST be a list of **2 to 4** short, specific observations (**< 20 words each**).
-4. `"skill_results"` MUST include **all 5 skills** with values `"pass"|"fail"|"uncertain"`.
+4. `"skill_results"` MUST include **all assigned skills** with values `"pass"|"fail"|"uncertain"`.
 5. `"flags"` MUST be a list of **UPPERCASE** codes from the approved list only.
 6. `"risk_level"` MUST be exactly one of: `"low"`, `"medium"`, `"high"`.
 7. Benign handwritten/digital annotations are **NOT** evidence of forgery.

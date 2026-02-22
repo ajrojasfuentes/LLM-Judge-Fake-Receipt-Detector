@@ -5,8 +5,8 @@ Prompt builder for receipt forgery forensic judges (VL Models).
 
 This module loads:
 - A system prompt template (Markdown) with placeholders
-- A JSON output schema template
-- A set of per-skill Markdown checklists
+- A JSON output schema *template* (example JSON object shown to the model)
+- A catalog of per-skill Markdown checklists
 
 Expected placeholders in the system prompt template:
   {receipt_id}, {persona_name}, {persona_description},
@@ -15,21 +15,20 @@ Expected placeholders in the system prompt template:
 Optional placeholders supported (safe to include even if unused):
   {analysis_date}, {timezone}
 
+Key behavior (updated):
+- DEFAULT_SKILLS is a *catalog of available skills* (options), not the selection.
+- build_prompt(..., skill_ids=[...]) selects a subset of skills to insert into
+  the prompt and dynamically *prunes* output_schema["skill_results"] so it only
+  contains those selected skills.
+- The builder also patches the system prompt constraint line about "skill_results"
+  (if present) so it matches the selected skills.
+
 Design goals:
 - Skill IDs are snake_case and align with output_schema["skill_results"] keys.
 - Skills are inserted under an existing "###" heading, so this builder uses "####"
   (or deeper) headings for individual skills.
 - Paths are resolved relative to templates_dir (never the current working directory),
   unless absolute paths are provided.
-
-Usage:
-    rubric = Rubric(templates_dir="templates")
-    prompt = rubric.build_prompt(
-        receipt_id="X00016469622",
-        persona_name="Forensic Analyst",
-        persona_description="You are ...",
-        evidence_pack={"metadata": {...}},
-    )
 """
 
 from __future__ import annotations
@@ -37,10 +36,11 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
@@ -59,19 +59,23 @@ class RubricError(RuntimeError):
 @dataclass(frozen=True)
 class SkillSpec:
     """Definition of a single skill template."""
-    skill_id: str          # snake_case ID used in JSON schema
+    skill_id: str          # snake_case ID used in JSON output
     display_name: str      # human-friendly name for headings
     filename: str          # file name under templates_dir
 
 
-# Default canonical skill order (matches your schema keys)
-DEFAULT_SKILLS: Tuple[SkillSpec, ...] = (
-    SkillSpec("math_consistency", "Math Consistency", "math_consistency.md"),
-    SkillSpec("typography_analysis", "Typography Analysis", "typography_analysis.md"),
-    SkillSpec("visual_authenticity", "Visual Authenticity", "visual_authenticity.md"),
-    SkillSpec("layout_structure", "Layout Structure", "layout_structure.md"),
-    SkillSpec("contextual_validation", "Contextual Validation", "contextual_validation.md"),
-)
+# Catalog of available skills (in canonical order).
+# NOTE: This is *not* the selection; selection is provided via skill_ids=...
+DEFAULT_SKILLS: Dict[str, SkillSpec] = {
+    "math_consistency": SkillSpec("math_consistency", "Math Consistency", "math_consistency.md"),
+    "typography_analysis": SkillSpec("typography_analysis", "Typography Analysis", "typography_analysis.md"),
+    "visual_authenticity": SkillSpec("visual_authenticity", "Visual Authenticity", "visual_authenticity.md"),
+    "layout_structure": SkillSpec("layout_structure", "Layout Structure", "layout_structure.md"),
+    "contextual_validation": SkillSpec("contextual_validation", "Contextual Validation", "contextual_validation.md"),
+}
+
+# Backwards-compatible default list (old API expected a Sequence[SkillSpec])
+DEFAULT_SKILL_SPECS: Tuple[SkillSpec, ...] = tuple(DEFAULT_SKILLS.values())
 
 
 def _to_path(p: PathLike) -> Path:
@@ -117,6 +121,13 @@ def _read_text(path: Path, encoding: str = "utf-8") -> str:
 
 _HEADING_LEQ_3_RE = re.compile(r"^(#{1,3})\s+", re.MULTILINE)
 
+# Matches the constraint line that currently hard-codes "all 5 skills"
+# Example in template: 4. `"skill_results"` MUST include **all 5 skills** ...
+_SKILL_RESULTS_CONSTRAINT_RE = re.compile(
+    r"^\s*4\.\s+.*\"skill_results\".*$",
+    re.MULTILINE,
+)
+
 
 def _ensure_no_headings_leq_3(markdown: str, *, where: str) -> None:
     """
@@ -135,13 +146,23 @@ def _pretty_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=False)
 
 
+def _dedupe_preserve_order(items: Sequence[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
 class Rubric:
     """
     Loads and compiles skill templates into a complete judge prompt.
 
     Notes:
-    - If you change the output_schema.json keys under "skill_results", update
-      DEFAULT_SKILLS or pass a custom skills=... list.
+    - output_schema.json is treated as a *base template* (usually containing all
+      skill_results keys). build_prompt(...) prunes it to the requested skill_ids.
     """
 
     def __init__(
@@ -149,11 +170,34 @@ class Rubric:
         templates_dir: Optional[PathLike] = None,
         system_prompt_filename: str = "system_prompt.md",
         output_schema_filename: str = "output_schema.json",
-        skills: Sequence[SkillSpec] = DEFAULT_SKILLS,
+        skills: Optional[Sequence[SkillSpec]] = None,
+        skills_catalog: Optional[Mapping[str, SkillSpec]] = None,
         *,
         encoding: str = "utf-8",
         validate_skill_markdown: bool = True,
     ) -> None:
+        """
+        Backwards compatible:
+          - Old API: Rubric(..., skills=[SkillSpec(...), ...])
+          - New API: Rubric(..., skills_catalog={skill_id: SkillSpec(...), ...})
+
+        If both are provided, raises.
+        """
+        if skills is not None and skills_catalog is not None:
+            raise RubricError("Provide only one of skills=... or skills_catalog=..., not both.")
+
+        if skills_catalog is None:
+            if skills is None:
+                skills_catalog = DEFAULT_SKILLS
+            else:
+                # Convert the list of SkillSpec into an ordered catalog
+                tmp: Dict[str, SkillSpec] = {}
+                for spec in skills:
+                    if spec.skill_id in tmp:
+                        raise RubricError(f"Duplicate skill_id in skills list: {spec.skill_id}")
+                    tmp[spec.skill_id] = spec
+                skills_catalog = tmp
+
         self.templates_dir: Path = _resolve_templates_dir(templates_dir)
         self.encoding = encoding
         self.system_prompt_path = self.templates_dir / system_prompt_filename
@@ -161,25 +205,26 @@ class Rubric:
 
         # Load templates
         self._system_prompt_template: str = _read_text(self.system_prompt_path, encoding=self.encoding)
-        self._output_schema_text: str = _read_text(self.output_schema_path, encoding=self.encoding)
+        self._base_output_schema_text: str = _read_text(self.output_schema_path, encoding=self.encoding)
 
         try:
-            self._output_schema_obj: Dict[str, Any] = json.loads(self._output_schema_text)
+            self._base_output_schema_obj: Dict[str, Any] = json.loads(self._base_output_schema_text)
         except Exception as e:
             raise RubricError(f"Invalid JSON in output schema template: {self.output_schema_path}") from e
 
-        # Load skills
-        self._skill_specs: Tuple[SkillSpec, ...] = tuple(skills)
-        self._skills: Dict[str, str] = {}
-        for spec in self._skill_specs:
+        # Catalog + canonical order
+        # (dict preserves insertion order in 3.7+, so DEFAULT_SKILLS order is canonical)
+        self._skills_catalog: Dict[str, SkillSpec] = dict(skills_catalog)
+        self._canonical_ids: List[str] = list(self._skills_catalog.keys())
+
+        # Load skill markdown files
+        self._skills_md: Dict[str, str] = {}
+        for sid, spec in self._skills_catalog.items():
             skill_path = (self.templates_dir / spec.filename).expanduser().resolve()
             text = _read_text(skill_path, encoding=self.encoding)
             if validate_skill_markdown:
                 _ensure_no_headings_leq_3(text, where=str(skill_path))
-            self._skills[spec.skill_id] = text
-
-        # Validate schema alignment (best-effort, but helpful)
-        self._validate_schema_skill_keys()
+            self._skills_md[sid] = text
 
     # ---------------------------
     # Public helpers
@@ -187,20 +232,42 @@ class Rubric:
 
     def available_skills(self) -> List[Tuple[str, str]]:
         """Return [(skill_id, display_name), ...] in canonical order."""
-        return [(s.skill_id, s.display_name) for s in self._skill_specs]
+        return [(sid, self._skills_catalog[sid].display_name) for sid in self._canonical_ids]
 
-    def get_output_schema_text(self) -> str:
-        """Return the output schema template text (as loaded)."""
-        return self._output_schema_text
+    def get_output_schema_text(self, skill_ids: Optional[Sequence[str]] = None) -> str:
+        """Return the (optionally pruned) output schema template text."""
+        return self.build_output_schema_text(skill_ids=skill_ids)
 
-    def get_output_schema(self) -> Dict[str, Any]:
-        """Return the output schema template as a Python dict."""
-        # Return a copy so callers can't mutate internal state accidentally.
-        return json.loads(self._output_schema_text)
+    def get_output_schema(self, skill_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """Return the (optionally pruned) output schema template as a Python dict."""
+        return self.build_output_schema(skill_ids=skill_ids)
 
     # ---------------------------
     # Core builders
     # ---------------------------
+
+    def normalize_skill_ids(self, skill_ids: Optional[Sequence[str]]) -> List[str]:
+        """
+        Normalize and validate a skill selection, returning IDs in canonical order.
+        - If skill_ids is None: all available skills in canonical order.
+        - If provided: unknown IDs raise; duplicates are removed (stable).
+        """
+        if skill_ids is None:
+            return list(self._canonical_ids)
+
+        chosen_raw = list(skill_ids)
+        if len(chosen_raw) == 0:
+            raise RubricError("skill_ids was provided but empty. Provide at least one skill_id.")
+
+        chosen = _dedupe_preserve_order(chosen_raw)
+
+        unknown = [sid for sid in chosen if sid not in self._skills_catalog]
+        if unknown:
+            available = ", ".join(self._canonical_ids)
+            raise RubricError(f"Unknown skill_ids: {unknown}. Available: {available}")
+
+        chosen_set = set(chosen)
+        return [sid for sid in self._canonical_ids if sid in chosen_set]
 
     def build_skills_block(
         self,
@@ -212,7 +279,7 @@ class Rubric:
         separator: str = "\n\n---\n\n",
     ) -> str:
         """
-        Compile the skills into one Markdown block.
+        Compile the selected skills into one Markdown block.
 
         Important: Skills are inserted under an existing "###" heading, so:
           header_level must be >= 4
@@ -220,33 +287,90 @@ class Rubric:
         if header_level < 4:
             raise ValueError("header_level must be >= 4 because skills are inserted under a '###' heading.")
 
-        ordered_ids = [s.skill_id for s in self._skill_specs]
-        chosen = list(skill_ids) if skill_ids is not None else ordered_ids
-
-        unknown = [sid for sid in chosen if sid not in self._skills]
-        if unknown:
-            available = ", ".join(ordered_ids)
-            raise RubricError(f"Unknown skill_ids: {unknown}. Available: {available}")
-
-        # Keep canonical order even if a subset is provided
-        chosen_set = set(chosen)
-        chosen_in_order = [sid for sid in ordered_ids if sid in chosen_set]
+        chosen_in_order = self.normalize_skill_ids(skill_ids)
 
         prefix = "#" * header_level
         blocks: List[str] = []
 
         for i, sid in enumerate(chosen_in_order, start=1):
-            spec = next(s for s in self._skill_specs if s.skill_id == sid)
-            title_parts = []
+            spec = self._skills_catalog[sid]
+            title_parts: List[str] = []
             if numbered:
                 title_parts.append(f"{i}.")
             title_parts.append(spec.display_name)
             if include_ids_in_heading:
                 title_parts.append(f"(`{sid}`)")
             heading = f"{prefix} " + " ".join(title_parts)
-            blocks.append(f"{heading}\n\n{self._skills[sid].rstrip()}")
+            blocks.append(f"{heading}\n\n{self._skills_md[sid].rstrip()}")
 
         return separator.join(blocks).rstrip() + "\n"
+
+    def build_output_schema(
+        self,
+        skill_ids: Optional[Sequence[str]] = None,
+        *,
+        validate_against_base: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Build the output schema object shown to the model, pruning skill_results
+        to contain *only* the selected skills.
+
+        validate_against_base:
+          - True: require that each selected skill exists in the base schema's
+            "skill_results" keys (helps catch drift).
+          - False: if missing, auto-insert "<pass|fail|uncertain>" placeholders.
+        """
+        chosen_in_order = self.normalize_skill_ids(skill_ids)
+        base = deepcopy(self._base_output_schema_obj)
+
+        # Ensure skill_results exists and is a dict
+        sr = base.get("skill_results")
+        if not isinstance(sr, dict):
+            sr = {}
+            base["skill_results"] = sr
+
+        if validate_against_base:
+            missing = [sid for sid in chosen_in_order if sid not in sr]
+            if missing:
+                raise RubricError(
+                    "Selected skill_ids are missing from base output_schema.json skill_results keys: "
+                    f"{missing}"
+                )
+
+        # Rebuild skill_results in canonical chosen order
+        new_sr: Dict[str, Any] = {}
+        for sid in chosen_in_order:
+            if sid in sr:
+                new_sr[sid] = sr[sid]
+            else:
+                new_sr[sid] = "<pass|fail|uncertain>"
+        base["skill_results"] = new_sr
+        return base
+
+    def build_output_schema_text(
+        self,
+        skill_ids: Optional[Sequence[str]] = None,
+        *,
+        validate_against_base: bool = True,
+    ) -> str:
+        """Pretty JSON string for the pruned output schema."""
+        return _pretty_json(self.build_output_schema(skill_ids=skill_ids, validate_against_base=validate_against_base))
+
+    def _patch_skill_results_constraint(self, system_prompt: str, chosen_in_order: Sequence[str]) -> str:
+        """
+        Patch the constraint line about "skill_results" if the template contains it.
+
+        This prevents the prompt from contradicting a pruned output_schema when
+        fewer (or more) skills are assigned.
+        """
+        skills_list = ", ".join(f"`{sid}`" for sid in chosen_in_order)
+        replacement = (
+            f'4. `"skill_results"` MUST include results for all assigned skills '
+            f'({len(chosen_in_order)}): {skills_list} with values `"pass"|"fail"|"uncertain"`.'
+        )
+        if not _SKILL_RESULTS_CONSTRAINT_RE.search(system_prompt):
+            return system_prompt
+        return _SKILL_RESULTS_CONSTRAINT_RE.sub(replacement, system_prompt, count=1)
 
     def build_prompt(
         self,
@@ -259,6 +383,9 @@ class Rubric:
         analysis_date: Optional[str] = None,
         timezone: str = DEFAULT_TIMEZONE,
         header_level: int = 4,
+        # Backwards compatible parameter (old code may pass it).
+        # New behavior: validates only that selected skills exist in the base schema (subset),
+        # and/or auto-fills placeholders if validate_schema_skills=False.
         validate_schema_skills: bool = True,
     ) -> str:
         """
@@ -268,9 +395,16 @@ class Rubric:
           - str: inserted as-is
           - dict/list: pretty-printed JSON for readability
         """
+        chosen_in_order = self.normalize_skill_ids(skill_ids)
+
         skills_block = self.build_skills_block(
-            skill_ids=skill_ids,
+            skill_ids=chosen_in_order,
             header_level=header_level,
+        )
+
+        output_schema_text = self.build_output_schema_text(
+            skill_ids=chosen_in_order,
+            validate_against_base=validate_schema_skills,
         )
 
         if isinstance(evidence_pack, str):
@@ -281,70 +415,31 @@ class Rubric:
         if analysis_date is None:
             analysis_date = self._default_analysis_date(timezone)
 
-        # Validate schema skill keys match what we're asking for (recommended)
-        if validate_schema_skills:
-            schema_ids = self._schema_skill_ids()
-            requested_ids = self._requested_skill_ids(skill_ids)
-            if schema_ids != requested_ids:
-                raise RubricError(
-                    "Mismatch between output_schema.json skill_results keys and requested skill_ids.\n"
-                    f"schema skill_results keys: {sorted(schema_ids)}\n"
-                    f"requested skill_ids:      {sorted(requested_ids)}\n"
-                    "Fix by updating output_schema.json or the skills passed to Rubric."
-                )
+        patched_system_prompt = self._patch_skill_results_constraint(
+            self._system_prompt_template,
+            chosen_in_order,
+        )
 
         try:
-            return self._system_prompt_template.format(
+            return patched_system_prompt.format(
                 receipt_id=receipt_id,
                 persona_name=persona_name,
                 persona_description=persona_description,
                 skills=skills_block,
-                output_schema=self._output_schema_text,
+                output_schema=output_schema_text,
                 evidence_pack=evidence_text,
                 analysis_date=analysis_date,  # optional placeholder
                 timezone=timezone,            # optional placeholder
             ).rstrip() + "\n"
         except KeyError as e:
-            # Make missing placeholder errors actionable
             raise RubricError(
                 f"Missing placeholder in build_prompt() arguments: {e}. "
                 "Check system_prompt.md placeholders."
             ) from e
 
     # ---------------------------
-    # Internal validation
+    # Internals
     # ---------------------------
-
-    def _schema_skill_ids(self) -> set:
-        skill_results = self._output_schema_obj.get("skill_results", {})
-        if not isinstance(skill_results, dict):
-            return set()
-        return set(skill_results.keys())
-
-    def _requested_skill_ids(self, skill_ids: Optional[Sequence[str]]) -> set:
-        if skill_ids is None:
-            return set(s.skill_id for s in self._skill_specs)
-        return set(skill_ids)
-
-    def _validate_schema_skill_keys(self) -> None:
-        schema_ids = self._schema_skill_ids()
-        if not schema_ids:
-            # If schema is missing/invalid skill_results, don't hard-fail here,
-            # but the build_prompt(validate_schema_skills=True) will catch mismatch.
-            return
-
-        #known_ids = set(s.skill_id for s in self._skill_specs)
-        #missing_in_templates = sorted(schema_ids - known_ids)
-        #extra_in_templates = sorted(known_ids - schema_ids)
-
-        #if missing_in_templates or extra_in_templates:
-            ## Non-fatal, but very useful in dev. Raise as error to avoid silent drift.
-            #raise RubricError(
-                #"output_schema.json and skill templates are out of sync.\n"
-                #f"Missing templates for schema keys: {missing_in_templates}\n"
-                #f"Extra templates not in schema:     {extra_in_templates}\n"
-                #"Fix by updating DEFAULT_SKILLS or output_schema.json."
-            #)
 
     def _default_analysis_date(self, timezone: str) -> str:
         """
