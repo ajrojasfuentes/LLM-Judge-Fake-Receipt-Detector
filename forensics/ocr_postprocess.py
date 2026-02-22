@@ -700,7 +700,7 @@ def compute_arithmetic_report(structured: OCRStructured, config: Optional[OCRPar
         if amt is not None:
             item_amounts.append(amt)
 
-    item_sum = sum(item_amounts).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    item_sum = sum(item_amounts, Decimal("0.00")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     # Extract core fields
     subtotal = _best_amount_from_lines(parsed_lines, "SUBTOTAL", ("SUBTOTAL", "SUB TOTAL", "SUB-TOTAL"))

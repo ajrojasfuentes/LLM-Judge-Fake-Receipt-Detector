@@ -1,0 +1,10 @@
+{
+  "_description": "Template for FULL mode evidence pack (GRAPHIC + READING combined).",
+  "_version": "3.0.0",
+  "mode": "FULL",
+  "inherits": [
+    "forensics/evidence_pack_template_graphic.json",
+    "forensics/evidence_pack_template_reading.json"
+  ],
+  "note": "Contains every field from GRAPHIC plus the full reading block."
+}
